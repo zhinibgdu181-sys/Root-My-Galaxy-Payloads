@@ -347,6 +347,36 @@ static int wait_status(pid_t pid) {
   return 1;
 }
 
+
+static int wait_status_diagnostic(pid_t pid, const char *label) {
+  int status;
+  dprintf(STDOUT_FILENO, "[*] %s_WAIT pid=%d\n", label, pid);
+  for (;;) {
+    pid_t waited = waitpid(pid, &status, 0);
+    if (waited == pid) break;
+    if (waited < 0 && errno == EINTR) continue;
+    dprintf(STDERR_FILENO,
+            "[!] %s_WAIT_ERROR pid=%d errno=%d (%s)\n",
+            label, pid, errno, strerror(errno));
+    return 1;
+  }
+  if (WIFEXITED(status)) {
+    int rc = WEXITSTATUS(status);
+    dprintf(STDOUT_FILENO, "[*] %s_EXIT pid=%d rc=%d\n", label, pid, rc);
+    return rc;
+  }
+  if (WIFSIGNALED(status)) {
+    int sig = WTERMSIG(status);
+    dprintf(STDERR_FILENO, "[!] %s_SIGNAL pid=%d signal=%d\n",
+            label, pid, sig);
+    return 128 + sig;
+  }
+  dprintf(STDERR_FILENO,
+          "[!] %s_UNKNOWN_STATUS pid=%d status=0x%x\n",
+          label, pid, status);
+  return 1;
+}
+
 static int recv_hold_fds(int socket_fd, int fds[HOLD_REF_FDS]) {
   char marker = 0;
   struct iovec iov = {
@@ -419,7 +449,13 @@ struct ksu_get_info_cmd {
 
 static int verify_kernelsu_control(void) {
   int fd = -1;
-  syscall(SYS_reboot, 0xDEADBEEF, 0xCAFEBABE, 0, &fd);
+  dprintf(STDOUT_FILENO, "[*] KSU_CONTROL_PROBE_START\n");
+  errno = 0;
+  long reboot_ret = syscall(SYS_reboot, 0xDEADBEEF, 0xCAFEBABE, 0, &fd);
+  int reboot_errno = errno;
+  dprintf(STDOUT_FILENO,
+          "[*] KSU_CONTROL_PROBE_FD syscall_ret=%ld errno=%d fd=%d\n",
+          reboot_ret, reboot_errno, fd);
   if (fd < 0) {
     dprintf(STDERR_FILENO, "late-load: KernelSU driver fd unavailable\n");
     return 13;
@@ -427,8 +463,14 @@ static int verify_kernelsu_control(void) {
 
   struct ksu_get_info_cmd info;
   memset(&info, 0, sizeof(info));
+  errno = 0;
   int ret = ioctl(fd, _IOR('K', 2, struct ksu_get_info_cmd), &info);
   int saved_errno = errno;
+  dprintf(STDOUT_FILENO,
+          "[*] KSU_CONTROL_IOCTL ret=%d errno=%d version=%u flags=0x%x "
+          "uapi=%u features=0x%x\n",
+          ret, saved_errno, info.version, info.flags,
+          info.uapi_version, info.features);
   close(fd);
   if (ret != 0 || info.version == 0 || (info.flags & 1U) == 0 ||
       (info.flags & 4U) == 0) {
@@ -447,8 +489,11 @@ static int verify_kernelsu_control(void) {
 }
 
 static int run_kernelsu_late_load(struct su_request *request, int conn) {
+  dprintf(STDOUT_FILENO, "[*] KSU_NATIVE_START daemon_pid=%d\n", getpid());
   pid_t pid = fork();
   if (pid < 0) {
+    dprintf(STDERR_FILENO, "[!] KSU_NATIVE_FORK_ERROR errno=%d (%s)\n",
+            errno, strerror(errno));
     return 1;
   }
   if (pid == 0) {
@@ -460,6 +505,7 @@ static int run_kernelsu_late_load(struct su_request *request, int conn) {
     }
     close(conn);
     close_request_fds(request);
+    dprintf(STDOUT_FILENO, "[*] KSU_NATIVE_CHILD pid=%d\n", getpid());
 
     if (unshare(CLONE_NEWNS) != 0 ||
         mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
@@ -467,10 +513,15 @@ static int run_kernelsu_late_load(struct su_request *request, int conn) {
               strerror(errno));
       _exit(10);
     }
+    dprintf(STDOUT_FILENO, "[*] KSU_NAMESPACE_OK pid=%d\n", getpid());
+
     if (mount(KSU_LOADER_PATH, LOGCAT_PATH, NULL, MS_BIND, NULL) != 0) {
       dprintf(STDERR_FILENO, "late-load: bind mount: %s\n", strerror(errno));
       _exit(11);
     }
+    dprintf(STDOUT_FILENO,
+            "[*] KSU_BIND_MOUNT_OK source=%s target=%s\n",
+            KSU_LOADER_PATH, LOGCAT_PATH);
 
     pid_t loader = fork();
     if (loader < 0) {
@@ -478,23 +529,28 @@ static int run_kernelsu_late_load(struct su_request *request, int conn) {
       _exit(12);
     }
     if (loader == 0) {
-      /* Let the downloaded target-specific ksud select its embedded module
-       * from the running kernel.  Ephemeral mode avoids replacing an existing
-       * /data/adb/ksud while the app only needs the module for this boot. */
+      dprintf(STDOUT_FILENO, "[*] KSU_LOADER_EXEC pid=%d path=%s\n",
+              getpid(), LOGCAT_PATH);
       execl(LOGCAT_PATH, "logcat", "late-load", "--ephemeral",
             "--package-name", "me.weishu.kernelsu", (char *)NULL);
       dprintf(STDERR_FILENO, "late-load: exec: %s\n", strerror(errno));
       _exit(12);
     }
 
-    int loader_status = wait_status(loader);
+    dprintf(STDOUT_FILENO, "[*] KSU_LOADER_FORK pid=%d\n", loader);
+    int loader_status = wait_status_diagnostic(loader, "KSU_LOADER");
     if (loader_status != 0) {
       _exit(loader_status);
     }
-    _exit(verify_kernelsu_control());
+    dprintf(STDOUT_FILENO, "[*] KSU_LOADER_COMPLETE rc=0\n");
+    int verify_status = verify_kernelsu_control();
+    dprintf(STDOUT_FILENO, "[*] KSU_CONTROL_PROBE_RESULT rc=%d\n",
+            verify_status);
+    _exit(verify_status);
   }
   close_request_fds(request);
-  return wait_status(pid);
+  dprintf(STDOUT_FILENO, "[*] KSU_NATIVE_CHILD_FORK pid=%d\n", pid);
+  return wait_status_diagnostic(pid, "KSU_NATIVE_CHILD");
 }
 
 static void send_response(int conn, int status) {
