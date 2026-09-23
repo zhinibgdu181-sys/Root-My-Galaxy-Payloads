@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -474,17 +475,56 @@ struct ksu_get_info_cmd {
   uint32_t uapi_version;
 };
 
+static int ksu_diag_fd = -1;
+
+static void ksu_diag_open(void) {
+  if (ksu_diag_fd >= 0) return;
+  ksu_diag_fd = open("/data/local/tmp/ksu-late-load.log",
+                     O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+}
+
+static void ksu_diag_vwrite(const char *fmt, va_list ap) {
+  if (ksu_diag_fd < 0) return;
+  va_list copy;
+  va_copy(copy, ap);
+  vdprintf(ksu_diag_fd, fmt, copy);
+  va_end(copy);
+  fsync(ksu_diag_fd);
+}
+
+static void ksu_log_stdout(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  va_list copy;
+  va_copy(copy, ap);
+  vdprintf(STDOUT_FILENO, fmt, copy);
+  va_end(copy);
+  ksu_diag_vwrite(fmt, ap);
+  va_end(ap);
+}
+
+static void ksu_log_stderr(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  va_list copy;
+  va_copy(copy, ap);
+  vdprintf(STDERR_FILENO, fmt, copy);
+  va_end(copy);
+  ksu_diag_vwrite(fmt, ap);
+  va_end(ap);
+}
+
 static int verify_kernelsu_control(void) {
   int fd = -1;
-  dprintf(STDOUT_FILENO, "[*] KSU_CONTROL_PROBE_START\n");
+  ksu_log_stdout( "[*] KSU_CONTROL_PROBE_START\n");
   errno = 0;
   long reboot_ret = syscall(SYS_reboot, 0xDEADBEEF, 0xCAFEBABE, 0, &fd);
   int reboot_errno = errno;
-  dprintf(STDOUT_FILENO,
+  ksu_log_stdout(
           "[*] KSU_CONTROL_PROBE_FD syscall_ret=%ld errno=%d fd=%d\n",
           reboot_ret, reboot_errno, fd);
   if (fd < 0) {
-    dprintf(STDERR_FILENO, "late-load: KernelSU driver fd unavailable\n");
+    ksu_log_stderr( "late-load: KernelSU driver fd unavailable\n");
     return 13;
   }
 
@@ -493,7 +533,7 @@ static int verify_kernelsu_control(void) {
   errno = 0;
   int ret = ioctl(fd, _IOR('K', 2, struct ksu_get_info_cmd), &info);
   int saved_errno = errno;
-  dprintf(STDOUT_FILENO,
+  ksu_log_stdout(
           "[*] KSU_CONTROL_IOCTL ret=%d errno=%d version=%u flags=0x%x "
           "uapi=%u features=0x%x\n",
           ret, saved_errno, info.version, info.flags,
@@ -501,14 +541,14 @@ static int verify_kernelsu_control(void) {
   close(fd);
   if (ret != 0 || info.version == 0 || (info.flags & 1U) == 0 ||
       (info.flags & 4U) == 0) {
-    dprintf(STDERR_FILENO,
+    ksu_log_stderr(
             "late-load: KernelSU control check failed ret=%d errno=%d "
             "version=%u flags=0x%x\n",
             ret, saved_errno, info.version, info.flags);
     return 14;
   }
 
-  dprintf(STDOUT_FILENO,
+  ksu_log_stdout(
           "KernelSU control verified version=%u flags=0x%x "
           "uapi=%u features=0x%x\n",
           info.version, info.flags, info.uapi_version, info.features);
@@ -516,10 +556,12 @@ static int verify_kernelsu_control(void) {
 }
 
 static int run_kernelsu_late_load(struct su_request *request, int conn) {
-  dprintf(STDOUT_FILENO, "[*] KSU_NATIVE_START daemon_pid=%d\n", getpid());
+  ksu_diag_open();
+  ksu_log_stdout("[*] KSU_DIAGNOSTIC_FILE path=/data/local/tmp/ksu-late-load.log\\n");
+  ksu_log_stdout( "[*] KSU_NATIVE_START daemon_pid=%d\n", getpid());
   pid_t pid = fork();
   if (pid < 0) {
-    dprintf(STDERR_FILENO, "[!] KSU_NATIVE_FORK_ERROR errno=%d (%s)\n",
+    ksu_log_stderr( "[!] KSU_NATIVE_FORK_ERROR errno=%d (%s)\n",
             errno, strerror(errno));
     return 1;
   }
@@ -532,51 +574,51 @@ static int run_kernelsu_late_load(struct su_request *request, int conn) {
     }
     close(conn);
     close_request_fds(request);
-    dprintf(STDOUT_FILENO, "[*] KSU_NATIVE_CHILD pid=%d\n", getpid());
+    ksu_log_stdout( "[*] KSU_NATIVE_CHILD pid=%d\n", getpid());
 
     if (unshare(CLONE_NEWNS) != 0 ||
         mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
-      dprintf(STDERR_FILENO, "late-load: private mount namespace: %s\n",
+      ksu_log_stderr( "late-load: private mount namespace: %s\n",
               strerror(errno));
       _exit(10);
     }
-    dprintf(STDOUT_FILENO, "[*] KSU_NAMESPACE_OK pid=%d\n", getpid());
+    ksu_log_stdout( "[*] KSU_NAMESPACE_OK pid=%d\n", getpid());
 
     if (mount(KSU_LOADER_PATH, LOGCAT_PATH, NULL, MS_BIND, NULL) != 0) {
-      dprintf(STDERR_FILENO, "late-load: bind mount: %s\n", strerror(errno));
+      ksu_log_stderr( "late-load: bind mount: %s\n", strerror(errno));
       _exit(11);
     }
-    dprintf(STDOUT_FILENO,
+    ksu_log_stdout(
             "[*] KSU_BIND_MOUNT_OK source=%s target=%s\n",
             KSU_LOADER_PATH, LOGCAT_PATH);
 
     pid_t loader = fork();
     if (loader < 0) {
-      dprintf(STDERR_FILENO, "late-load: fork: %s\n", strerror(errno));
+      ksu_log_stderr( "late-load: fork: %s\n", strerror(errno));
       _exit(12);
     }
     if (loader == 0) {
-      dprintf(STDOUT_FILENO, "[*] KSU_LOADER_EXEC pid=%d path=%s\n",
+      ksu_log_stdout( "[*] KSU_LOADER_EXEC pid=%d path=%s\n",
               getpid(), LOGCAT_PATH);
       execl(LOGCAT_PATH, "logcat", "late-load",
             "--package-name", "me.weishu.kernelsu", (char *)NULL);
-      dprintf(STDERR_FILENO, "late-load: exec: %s\n", strerror(errno));
+      ksu_log_stderr( "late-load: exec: %s\n", strerror(errno));
       _exit(12);
     }
 
-    dprintf(STDOUT_FILENO, "[*] KSU_LOADER_FORK pid=%d\n", loader);
+    ksu_log_stdout( "[*] KSU_LOADER_FORK pid=%d\n", loader);
     int loader_status = wait_status_diagnostic(loader, "KSU_LOADER");
     if (loader_status != 0) {
       _exit(loader_status);
     }
-    dprintf(STDOUT_FILENO, "[*] KSU_LOADER_COMPLETE rc=0\n");
+    ksu_log_stdout( "[*] KSU_LOADER_COMPLETE rc=0\n");
     int verify_status = verify_kernelsu_control();
-    dprintf(STDOUT_FILENO, "[*] KSU_CONTROL_PROBE_RESULT rc=%d\n",
+    ksu_log_stdout( "[*] KSU_CONTROL_PROBE_RESULT rc=%d\n",
             verify_status);
     _exit(verify_status);
   }
   close_request_fds(request);
-  dprintf(STDOUT_FILENO, "[*] KSU_NATIVE_CHILD_FORK pid=%d\n", pid);
+  ksu_log_stdout( "[*] KSU_NATIVE_CHILD_FORK pid=%d\n", pid);
   return wait_status_diagnostic(pid, "KSU_NATIVE_CHILD");
 }
 
