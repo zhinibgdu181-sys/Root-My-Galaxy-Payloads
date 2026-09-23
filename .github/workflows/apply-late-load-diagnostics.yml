@@ -1,0 +1,219 @@
+name: Apply KernelSU late-load diagnostics
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-late-load-diagnostics.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Patch native late-load diagnostics
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/su_daemon.c')
+          s = path.read_text()
+
+          wait_old = '''static int wait_status(pid_t pid) {
+            int status;
+            while (waitpid(pid, &status, 0) < 0) {
+              if (errno != EINTR) {
+                return 1;
+              }
+            }
+            if (WIFEXITED(status)) {
+              return WEXITSTATUS(status);
+            }
+            if (WIFSIGNALED(status)) {
+              return 128 + WTERMSIG(status);
+            }
+            return 1;
+          }
+          '''
+          wait_new = wait_old + '''
+          static int wait_status_diagnostic(pid_t pid, const char *label) {
+            int status;
+            dprintf(STDOUT_FILENO, "[*] %s_WAIT pid=%d\\n", label, pid);
+            for (;;) {
+              pid_t waited = waitpid(pid, &status, 0);
+              if (waited == pid) {
+                break;
+              }
+              if (waited < 0 && errno == EINTR) {
+                continue;
+              }
+              dprintf(STDERR_FILENO,
+                      "[!] %s_WAIT_ERROR pid=%d errno=%d (%s)\\n",
+                      label, pid, errno, strerror(errno));
+              return 1;
+            }
+            if (WIFEXITED(status)) {
+              int rc = WEXITSTATUS(status);
+              dprintf(STDOUT_FILENO, "[*] %s_EXIT pid=%d rc=%d\\n",
+                      label, pid, rc);
+              return rc;
+            }
+            if (WIFSIGNALED(status)) {
+              int sig = WTERMSIG(status);
+              dprintf(STDERR_FILENO, "[!] %s_SIGNAL pid=%d signal=%d\\n",
+                      label, pid, sig);
+              return 128 + sig;
+            }
+            dprintf(STDERR_FILENO,
+                    "[!] %s_UNKNOWN_STATUS pid=%d status=0x%x\\n",
+                    label, pid, status);
+            return 1;
+          }
+          '''
+          if wait_old not in s:
+              raise SystemExit('wait_status anchor not found')
+          s = s.replace(wait_old, wait_new, 1)
+
+          verify_start = '''static int verify_kernelsu_control(void) {
+            int fd = -1;
+            syscall(SYS_reboot, 0xDEADBEEF, 0xCAFEBABE, 0, &fd);
+          '''
+          verify_repl = '''static int verify_kernelsu_control(void) {
+            int fd = -1;
+            dprintf(STDOUT_FILENO, "[*] KSU_CONTROL_PROBE_START\\n");
+            errno = 0;
+            long reboot_ret =
+                syscall(SYS_reboot, 0xDEADBEEF, 0xCAFEBABE, 0, &fd);
+            int reboot_errno = errno;
+            dprintf(STDOUT_FILENO,
+                    "[*] KSU_CONTROL_PROBE_FD syscall_ret=%ld errno=%d fd=%d\\n",
+                    reboot_ret, reboot_errno, fd);
+          '''
+          if verify_start not in s:
+              raise SystemExit('verify start anchor not found')
+          s = s.replace(verify_start, verify_repl, 1)
+
+          ioctl_anchor = '''  int ret = ioctl(fd, _IOR('K', 2, struct ksu_get_info_cmd), &info);
+            int saved_errno = errno;
+            close(fd);
+          '''
+          ioctl_repl = '''  errno = 0;
+            int ret = ioctl(fd, _IOR('K', 2, struct ksu_get_info_cmd), &info);
+            int saved_errno = errno;
+            dprintf(STDOUT_FILENO,
+                    "[*] KSU_CONTROL_IOCTL ret=%d errno=%d version=%u flags=0x%x "
+                    "uapi=%u features=0x%x\\n",
+                    ret, saved_errno, info.version, info.flags,
+                    info.uapi_version, info.features);
+            close(fd);
+          '''
+          if ioctl_anchor not in s:
+              raise SystemExit('ioctl anchor not found')
+          s = s.replace(ioctl_anchor, ioctl_repl, 1)
+
+          start = s.index('static int run_kernelsu_late_load(')
+          end = s.index('\nstatic void send_response', start)
+          block = s[start:end]
+
+          replacements = [
+              (
+                  '''static int run_kernelsu_late_load(struct su_request *request, int conn) {
+            pid_t pid = fork();''',
+                  '''static int run_kernelsu_late_load(struct su_request *request, int conn) {
+            dprintf(STDOUT_FILENO, "[*] KSU_NATIVE_START daemon_pid=%d\\n", getpid());
+            pid_t pid = fork();'''
+              ),
+              (
+                  '''    close(conn);
+            close_request_fds(request);
+
+            if (unshare(CLONE_NEWNS) != 0 ||''',
+                  '''    close(conn);
+            close_request_fds(request);
+            dprintf(STDOUT_FILENO, "[*] KSU_NATIVE_CHILD pid=%d\\n", getpid());
+
+            if (unshare(CLONE_NEWNS) != 0 ||'''
+              ),
+              (
+                  '''      _exit(10);
+            }
+            if (mount(KSU_LOADER_PATH, LOGCAT_PATH, NULL, MS_BIND, NULL) != 0) {''',
+                  '''      _exit(10);
+            }
+            dprintf(STDOUT_FILENO, "[*] KSU_NAMESPACE_OK pid=%d\\n", getpid());
+            if (mount(KSU_LOADER_PATH, LOGCAT_PATH, NULL, MS_BIND, NULL) != 0) {'''
+              ),
+              (
+                  '''      _exit(11);
+            }
+
+            pid_t loader = fork();''',
+                  '''      _exit(11);
+            }
+            dprintf(STDOUT_FILENO,
+                    "[*] KSU_BIND_MOUNT_OK source=%s target=%s\\n",
+                    KSU_LOADER_PATH, LOGCAT_PATH);
+
+            pid_t loader = fork();'''
+              ),
+              (
+                  '''    if (loader == 0) {
+              /* Let the downloaded target-specific ksud select its embedded module''',
+                  '''    if (loader == 0) {
+              dprintf(STDOUT_FILENO,
+                      "[*] KSU_LOADER_EXEC pid=%d path=%s\\n",
+                      getpid(), LOGCAT_PATH);
+              /* Let the downloaded target-specific ksud select its embedded module'''
+              ),
+              (
+                  '''    int loader_status = wait_status(loader);
+            if (loader_status != 0) {''',
+                  '''    dprintf(STDOUT_FILENO, "[*] KSU_LOADER_FORK pid=%d\\n", loader);
+            int loader_status = wait_status_diagnostic(loader, "KSU_LOADER");
+            if (loader_status != 0) {'''
+              ),
+              (
+                  '''    _exit(verify_kernelsu_control());
+            }
+            close_request_fds(request);
+            return wait_status(pid);''',
+                  '''    dprintf(STDOUT_FILENO, "[*] KSU_LOADER_COMPLETE rc=0\\n");
+            int verify_status = verify_kernelsu_control();
+            dprintf(STDOUT_FILENO, "[*] KSU_CONTROL_PROBE_RESULT rc=%d\\n",
+                    verify_status);
+            _exit(verify_status);
+            }
+            close_request_fds(request);
+            dprintf(STDOUT_FILENO, "[*] KSU_NATIVE_CHILD_FORK pid=%d\\n", pid);
+            return wait_status_diagnostic(pid, "KSU_NATIVE_CHILD");'''
+              ),
+          ]
+          for old, new in replacements:
+              if old not in block:
+                  raise SystemExit('late-load anchor not found:\n' + old)
+              block = block.replace(old, new, 1)
+
+          s = s[:start] + block + s[end:]
+          path.write_text(s)
+          PY
+
+          git diff --check
+          git diff -- src/su_daemon.c
+      - name: Commit diagnostics
+        shell: bash
+        run: |
+          if git diff --quiet -- src/su_daemon.c; then
+            echo 'No source changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/su_daemon.c
+          git commit -m 'Instrument KernelSU native late-load path'
+          git push origin HEAD:main
