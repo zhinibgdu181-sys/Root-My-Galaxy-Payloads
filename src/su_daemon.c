@@ -531,7 +531,7 @@ static int run_kernelsu_late_load(struct su_request *request, int conn) {
     if (loader == 0) {
       dprintf(STDOUT_FILENO, "[*] KSU_LOADER_EXEC pid=%d path=%s\n",
               getpid(), LOGCAT_PATH);
-      execl(LOGCAT_PATH, "logcat", "late-load", "--ephemeral",
+      execl(LOGCAT_PATH, "logcat", "late-load",
             "--package-name", "me.weishu.kernelsu", (char *)NULL);
       dprintf(STDERR_FILENO, "late-load: exec: %s\n", strerror(errno));
       _exit(12);
