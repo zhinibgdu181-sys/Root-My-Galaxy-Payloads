@@ -617,6 +617,41 @@ static int verify_kernelsu_control(void) {
   return 0;
 }
 
+static int wait_for_kernelsu_control(void) {
+  const unsigned long timeout_ms = 60000UL;
+  const unsigned long poll_ms = 1000UL;
+  struct timespec start_time;
+  clock_gettime(CLOCK_MONOTONIC, &start_time);
+
+  unsigned int attempt = 0;
+  int last_status = 13;
+
+  for (;;) {
+    attempt++;
+    last_status = verify_kernelsu_control();
+    if (last_status == 0) {
+      ksu_log_stdout(
+          "[+] KSU_CONTROL_READY attempt=%u elapsed_ms=%lu\n",
+          attempt, monotonic_elapsed_ms(&start_time));
+      return 0;
+    }
+
+    unsigned long elapsed_ms = monotonic_elapsed_ms(&start_time);
+    if (elapsed_ms >= timeout_ms) {
+      ksu_log_stderr(
+          "[!] KSU_CONTROL_WAIT_TIMEOUT attempt=%u elapsed_ms=%lu "
+          "last_rc=%d\n",
+          attempt, elapsed_ms, last_status);
+      return last_status;
+    }
+
+    ksu_log_stdout(
+        "[*] KSU_CONTROL_WAIT attempt=%u elapsed_ms=%lu rc=%d\n",
+        attempt, elapsed_ms, last_status);
+    usleep(poll_ms * 1000UL);
+  }
+}
+
 static int run_kernelsu_late_load(struct su_request *request, int conn) {
   ksu_diag_open();
   ksu_log_stdout("[*] KSU_DIAGNOSTIC_FILE path=/data/local/tmp/ksu-late-load.log\n");
@@ -673,8 +708,15 @@ static int run_kernelsu_late_load(struct su_request *request, int conn) {
     if (loader_status != 0) {
       _exit(loader_status);
     }
-    ksu_log_stdout( "[*] KSU_LOADER_COMPLETE rc=0\n");
-    int verify_status = verify_kernelsu_control();
+    /*
+     * ksud late-load intentionally daemonizes.  Its command process can exit
+     * successfully before the detached daemon has loaded kernelsu.ko and
+     * installed /data/adb/ksud.  Waiting only on the launcher therefore races
+     * the actual late-load operation and causes a false verification failure.
+     * Wait for the KernelSU control interface itself to become ready instead.
+     */
+    ksu_log_stdout( "[*] KSU_LOADER_LAUNCH_COMPLETE rc=0\n");
+    int verify_status = wait_for_kernelsu_control();
     ksu_log_stdout( "[*] KSU_CONTROL_PROBE_RESULT rc=%d\n",
             verify_status);
     _exit(verify_status);
