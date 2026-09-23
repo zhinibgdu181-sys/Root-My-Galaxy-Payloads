@@ -350,30 +350,57 @@ static int wait_status(pid_t pid) {
 
 static int wait_status_diagnostic(pid_t pid, const char *label) {
   int status;
-  dprintf(STDOUT_FILENO, "[*] %s_WAIT pid=%d\n", label, pid);
+  unsigned long elapsed_ms = 0;
+  dprintf(STDOUT_FILENO, "[*] %s_WAIT_BEGIN pid=%d\n", label, pid);
   for (;;) {
-    pid_t waited = waitpid(pid, &status, 0);
+    pid_t waited = waitpid(pid, &status, WNOHANG);
     if (waited == pid) break;
     if (waited < 0 && errno == EINTR) continue;
-    dprintf(STDERR_FILENO,
-            "[!] %s_WAIT_ERROR pid=%d errno=%d (%s)\n",
-            label, pid, errno, strerror(errno));
-    return 1;
+    if (waited < 0) {
+      dprintf(STDERR_FILENO,
+              "[!] %s_WAIT_ERROR pid=%d errno=%d (%s)\n",
+              label, pid, errno, strerror(errno));
+      return 1;
+    }
+
+    elapsed_ms += 2000;
+    if (elapsed_ms % 10000 == 0) {
+      char state = '?';
+      char path[64];
+      snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+      FILE *proc = fopen(path, "re");
+      if (proc) {
+        int proc_pid = 0;
+        char comm[256] = {0};
+        char proc_state = '?';
+        if (fscanf(proc, "%d (%255[^)]) %c", &proc_pid, comm,
+                   &proc_state) == 3) {
+          state = proc_state;
+        }
+        fclose(proc);
+      }
+      dprintf(STDOUT_FILENO,
+              "[*] %s_WAIT_HEARTBEAT pid=%d elapsed_ms=%lu state=%c\n",
+              label, pid, elapsed_ms, state);
+    }
+    usleep(2000000);
   }
   if (WIFEXITED(status)) {
     int rc = WEXITSTATUS(status);
-    dprintf(STDOUT_FILENO, "[*] %s_EXIT pid=%d rc=%d\n", label, pid, rc);
+    dprintf(STDOUT_FILENO, "[*] %s_EXIT pid=%d rc=%d elapsed_ms=%lu\n",
+            label, pid, rc, elapsed_ms);
     return rc;
   }
   if (WIFSIGNALED(status)) {
     int sig = WTERMSIG(status);
-    dprintf(STDERR_FILENO, "[!] %s_SIGNAL pid=%d signal=%d\n",
-            label, pid, sig);
+    dprintf(STDERR_FILENO,
+            "[!] %s_SIGNAL pid=%d signal=%d elapsed_ms=%lu\n",
+            label, pid, sig, elapsed_ms);
     return 128 + sig;
   }
   dprintf(STDERR_FILENO,
-          "[!] %s_UNKNOWN_STATUS pid=%d status=0x%x\n",
-          label, pid, status);
+          "[!] %s_UNKNOWN_STATUS pid=%d status=0x%x elapsed_ms=%lu\n",
+          label, pid, status, elapsed_ms);
   return 1;
 }
 
