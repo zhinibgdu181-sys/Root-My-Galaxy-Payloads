@@ -23,6 +23,7 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #define BOOTSTRAP_SOCK_PATH "/data/local/tmp/temp_su.sock"
@@ -82,6 +83,19 @@ struct su_request {
 
 static int saved_terminal_fd = -1;
 static struct termios saved_terminal;
+
+/* Optional persistent diagnostic sink. Opened only during KernelSU late-load. */
+static int ksu_diag_fd = -1;
+
+static int persist_wait_line(const char *fmt, ...) {
+  if (ksu_diag_fd < 0) return 0;
+  va_list ap;
+  va_start(ap, fmt);
+  int rc = vdprintf(ksu_diag_fd, fmt, ap);
+  va_end(ap);
+  if (rc >= 0) fsync(ksu_diag_fd);
+  return rc >= 0;
+}
 
 static void restore_terminal(void) {
   if (saved_terminal_fd >= 0) {
@@ -349,23 +363,53 @@ static int wait_status(pid_t pid) {
 }
 
 
+static unsigned long monotonic_elapsed_ms(struct timespec *start) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+    return 0;
+  }
+  time_t sec = now.tv_sec - start->tv_sec;
+  long nsec = now.tv_nsec - start->tv_nsec;
+  if (nsec < 0) {
+    sec--;
+    nsec += 1000000000L;
+  }
+  if (sec < 0) return 0;
+  return (unsigned long)sec * 1000UL + (unsigned long)(nsec / 1000000L);
+}
+
 static int wait_status_diagnostic(pid_t pid, const char *label) {
   int status;
-  unsigned long elapsed_ms = 0;
-  dprintf(STDOUT_FILENO, "[*] %s_WAIT_BEGIN pid=%d\n", label, pid);
+  struct timespec start_time;
+  clock_gettime(CLOCK_MONOTONIC, &start_time);
+
+  int persisted = persist_wait_line(
+      "[diag] %s_WAIT_BEGIN pid=%d elapsed_ms=0\\n", label, pid);
+  dprintf(STDOUT_FILENO, "[*] %s_WAIT_BEGIN pid=%d\\n", label, pid);
+
   for (;;) {
     pid_t waited = waitpid(pid, &status, WNOHANG);
+    unsigned long elapsed_ms = monotonic_elapsed_ms(&start_time);
+
     if (waited == pid) break;
+
     if (waited < 0 && errno == EINTR) continue;
+
     if (waited < 0) {
+      int saved_errno = errno;
+      int diag_ok = persist_wait_line(
+          "[diag] %s_WAIT_ERROR pid=%d errno=%d message=%s elapsed_ms=%lu diag_persist=%d\\n",
+          label, pid, saved_errno, strerror(saved_errno), elapsed_ms,
+          persisted ? 1 : 0);
       dprintf(STDERR_FILENO,
-              "[!] %s_WAIT_ERROR pid=%d errno=%d (%s)\n",
-              label, pid, errno, strerror(errno));
+              "[!] %s_WAIT_ERROR pid=%d errno=%d (%s) elapsed_ms=%lu\\n",
+              label, pid, saved_errno, strerror(saved_errno), elapsed_ms);
+      (void)diag_ok;
       return 1;
     }
 
-    elapsed_ms += 2000;
-    if (elapsed_ms % 10000 == 0) {
+    if (elapsed_ms >= 10000 && elapsed_ms / 10000 !=
+        (elapsed_ms - 2000) / 10000) {
       char state = '?';
       char path[64];
       snprintf(path, sizeof(path), "/proc/%d/stat", pid);
@@ -380,28 +424,48 @@ static int wait_status_diagnostic(pid_t pid, const char *label) {
         }
         fclose(proc);
       }
+
+      int diag_ok = persist_wait_line(
+          "[diag] %s_WAIT_HEARTBEAT pid=%d elapsed_ms=%lu state=%c diag_persist=%d\\n",
+          label, pid, elapsed_ms, state, persisted ? 1 : 0);
       dprintf(STDOUT_FILENO,
-              "[*] %s_WAIT_HEARTBEAT pid=%d elapsed_ms=%lu state=%c\n",
-              label, pid, elapsed_ms, state);
+              "[*] %s_WAIT_HEARTBEAT pid=%d elapsed_ms=%lu state=%c diag_persist=%d\\n",
+              label, pid, elapsed_ms, state, diag_ok ? 1 : 0);
     }
+
     usleep(2000000);
   }
+
+  unsigned long elapsed_ms = monotonic_elapsed_ms(&start_time);
+
   if (WIFEXITED(status)) {
     int rc = WEXITSTATUS(status);
-    dprintf(STDOUT_FILENO, "[*] %s_EXIT pid=%d rc=%d elapsed_ms=%lu\n",
-            label, pid, rc, elapsed_ms);
+    int diag_ok = persist_wait_line(
+        "[diag] %s_EXIT pid=%d rc=%d elapsed_ms=%lu diag_persist=%d\\n",
+        label, pid, rc, elapsed_ms, persisted ? 1 : 0);
+    dprintf(STDOUT_FILENO,
+            "[*] %s_EXIT pid=%d rc=%d elapsed_ms=%lu diag_persist=%d\\n",
+            label, pid, rc, elapsed_ms, diag_ok ? 1 : 0);
     return rc;
   }
+
   if (WIFSIGNALED(status)) {
     int sig = WTERMSIG(status);
+    int diag_ok = persist_wait_line(
+        "[diag] %s_SIGNAL pid=%d signal=%d elapsed_ms=%lu diag_persist=%d\\n",
+        label, pid, sig, elapsed_ms, persisted ? 1 : 0);
     dprintf(STDERR_FILENO,
-            "[!] %s_SIGNAL pid=%d signal=%d elapsed_ms=%lu\n",
-            label, pid, sig, elapsed_ms);
+            "[!] %s_SIGNAL pid=%d signal=%d elapsed_ms=%lu diag_persist=%d\\n",
+            label, pid, sig, elapsed_ms, diag_ok ? 1 : 0);
     return 128 + sig;
   }
+
+  int diag_ok = persist_wait_line(
+      "[diag] %s_UNKNOWN_STATUS pid=%d status=0x%x elapsed_ms=%lu diag_persist=%d\\n",
+      label, pid, status, elapsed_ms, persisted ? 1 : 0);
   dprintf(STDERR_FILENO,
-          "[!] %s_UNKNOWN_STATUS pid=%d status=0x%x elapsed_ms=%lu\n",
-          label, pid, status, elapsed_ms);
+          "[!] %s_UNKNOWN_STATUS pid=%d status=0x%x elapsed_ms=%lu diag_persist=%d\\n",
+          label, pid, status, elapsed_ms, diag_ok ? 1 : 0);
   return 1;
 }
 
@@ -474,8 +538,6 @@ struct ksu_get_info_cmd {
   uint32_t features;
   uint32_t uapi_version;
 };
-
-static int ksu_diag_fd = -1;
 
 static void ksu_diag_open(void) {
   if (ksu_diag_fd >= 0) return;
