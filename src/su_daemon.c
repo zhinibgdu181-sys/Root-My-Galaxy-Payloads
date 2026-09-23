@@ -384,8 +384,8 @@ static int wait_status_diagnostic(pid_t pid, const char *label) {
   clock_gettime(CLOCK_MONOTONIC, &start_time);
 
   int persisted = persist_wait_line(
-      "[diag] %s_WAIT_BEGIN pid=%d elapsed_ms=0\\n", label, pid);
-  dprintf(STDOUT_FILENO, "[*] %s_WAIT_BEGIN pid=%d\\n", label, pid);
+      "[diag] %s_WAIT_BEGIN pid=%d elapsed_ms=0\n", label, pid);
+  dprintf(STDOUT_FILENO, "[*] %s_WAIT_BEGIN pid=%d\n", label, pid);
 
   for (;;) {
     pid_t waited = waitpid(pid, &status, WNOHANG);
@@ -398,11 +398,11 @@ static int wait_status_diagnostic(pid_t pid, const char *label) {
     if (waited < 0) {
       int saved_errno = errno;
       int diag_ok = persist_wait_line(
-          "[diag] %s_WAIT_ERROR pid=%d errno=%d message=%s elapsed_ms=%lu diag_persist=%d\\n",
+          "[diag] %s_WAIT_ERROR pid=%d errno=%d message=%s elapsed_ms=%lu diag_persist=%d\n",
           label, pid, saved_errno, strerror(saved_errno), elapsed_ms,
           persisted ? 1 : 0);
       dprintf(STDERR_FILENO,
-              "[!] %s_WAIT_ERROR pid=%d errno=%d (%s) elapsed_ms=%lu\\n",
+              "[!] %s_WAIT_ERROR pid=%d errno=%d (%s) elapsed_ms=%lu\n",
               label, pid, saved_errno, strerror(saved_errno), elapsed_ms);
       (void)diag_ok;
       return 1;
@@ -426,10 +426,10 @@ static int wait_status_diagnostic(pid_t pid, const char *label) {
       }
 
       int diag_ok = persist_wait_line(
-          "[diag] %s_WAIT_HEARTBEAT pid=%d elapsed_ms=%lu state=%c diag_persist=%d\\n",
+          "[diag] %s_WAIT_HEARTBEAT pid=%d elapsed_ms=%lu state=%c diag_persist=%d\n",
           label, pid, elapsed_ms, state, persisted ? 1 : 0);
       dprintf(STDOUT_FILENO,
-              "[*] %s_WAIT_HEARTBEAT pid=%d elapsed_ms=%lu state=%c diag_persist=%d\\n",
+              "[*] %s_WAIT_HEARTBEAT pid=%d elapsed_ms=%lu state=%c diag_persist=%d\n",
               label, pid, elapsed_ms, state, diag_ok ? 1 : 0);
     }
 
@@ -441,10 +441,10 @@ static int wait_status_diagnostic(pid_t pid, const char *label) {
   if (WIFEXITED(status)) {
     int rc = WEXITSTATUS(status);
     int diag_ok = persist_wait_line(
-        "[diag] %s_EXIT pid=%d rc=%d elapsed_ms=%lu diag_persist=%d\\n",
+        "[diag] %s_EXIT pid=%d rc=%d elapsed_ms=%lu diag_persist=%d\n",
         label, pid, rc, elapsed_ms, persisted ? 1 : 0);
     dprintf(STDOUT_FILENO,
-            "[*] %s_EXIT pid=%d rc=%d elapsed_ms=%lu diag_persist=%d\\n",
+            "[*] %s_EXIT pid=%d rc=%d elapsed_ms=%lu diag_persist=%d\n",
             label, pid, rc, elapsed_ms, diag_ok ? 1 : 0);
     return rc;
   }
@@ -452,19 +452,19 @@ static int wait_status_diagnostic(pid_t pid, const char *label) {
   if (WIFSIGNALED(status)) {
     int sig = WTERMSIG(status);
     int diag_ok = persist_wait_line(
-        "[diag] %s_SIGNAL pid=%d signal=%d elapsed_ms=%lu diag_persist=%d\\n",
+        "[diag] %s_SIGNAL pid=%d signal=%d elapsed_ms=%lu diag_persist=%d\n",
         label, pid, sig, elapsed_ms, persisted ? 1 : 0);
     dprintf(STDERR_FILENO,
-            "[!] %s_SIGNAL pid=%d signal=%d elapsed_ms=%lu diag_persist=%d\\n",
+            "[!] %s_SIGNAL pid=%d signal=%d elapsed_ms=%lu diag_persist=%d\n",
             label, pid, sig, elapsed_ms, diag_ok ? 1 : 0);
     return 128 + sig;
   }
 
   int diag_ok = persist_wait_line(
-      "[diag] %s_UNKNOWN_STATUS pid=%d status=0x%x elapsed_ms=%lu diag_persist=%d\\n",
+      "[diag] %s_UNKNOWN_STATUS pid=%d status=0x%x elapsed_ms=%lu diag_persist=%d\n",
       label, pid, status, elapsed_ms, persisted ? 1 : 0);
   dprintf(STDERR_FILENO,
-          "[!] %s_UNKNOWN_STATUS pid=%d status=0x%x elapsed_ms=%lu diag_persist=%d\\n",
+          "[!] %s_UNKNOWN_STATUS pid=%d status=0x%x elapsed_ms=%lu diag_persist=%d\n",
           label, pid, status, elapsed_ms, diag_ok ? 1 : 0);
   return 1;
 }
@@ -619,7 +619,7 @@ static int verify_kernelsu_control(void) {
 
 static int run_kernelsu_late_load(struct su_request *request, int conn) {
   ksu_diag_open();
-  ksu_log_stdout("[*] KSU_DIAGNOSTIC_FILE path=/data/local/tmp/ksu-late-load.log\\n");
+  ksu_log_stdout("[*] KSU_DIAGNOSTIC_FILE path=/data/local/tmp/ksu-late-load.log\n");
   ksu_log_stdout( "[*] KSU_NATIVE_START daemon_pid=%d\n", getpid());
   pid_t pid = fork();
   if (pid < 0) {
