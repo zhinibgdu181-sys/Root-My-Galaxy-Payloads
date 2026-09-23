@@ -99,7 +99,11 @@ $(PRELOAD): $(PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/kerne
 	  -shared -pthread -o $@
 
 $(ROOT_HELPER): src/su_daemon.c tools/instrument_su_daemon.py | $(OUTDIR)
-	python3 tools/instrument_su_daemon.py src/su_daemon.c $(ROOT_HELPER_SRC)
+	@if grep -q 'KSU_NATIVE_START' src/su_daemon.c; then \
+	  cp src/su_daemon.c $(ROOT_HELPER_SRC); \
+	else \
+	  python3 tools/instrument_su_daemon.py src/su_daemon.c $(ROOT_HELPER_SRC); \
+	fi
 	$(TARGET_CC) -fPIE -pie -O2 -g0 -Wall -Wextra $(ROOT_HELPER_SRC) -ldl -o $@
 
 $(APP_PRELOAD): $(APP_PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/kernelsnitch/*.h | $(OUTDIR)
