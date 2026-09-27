@@ -279,14 +279,15 @@ s = repl(s,
     rel)
 write(rel, s)
 
-# v3.3.0 tag references the retired Kernel-SU/adb_client URL. Keep the exact
-# pinned commit but use the public KernelSU2 mirror now used by later upstream.
+# v3.3.0 tag still references the retired Kernel-SU GitHub organization for
+# several Rust dependencies. Preserve every pinned revision; only migrate the
+# organization URL to the public KernelSU2 mirrors used by later upstream.
 for rel in ("userspace/ksud/Cargo.toml", "Cargo.lock"):
     s = read(rel)
-    old = "https://github.com/Kernel-SU/adb_client"
-    new = "https://github.com/KernelSU2/adb_client"
+    old = "https://github.com/Kernel-SU/"
+    new = "https://github.com/KernelSU2/"
     if old not in s:
-        raise SystemExit(f"{rel}: old adb_client source URL not found")
+        raise SystemExit(f"{rel}: retired Kernel-SU dependency URL not found")
     s = s.replace(old, new)
     write(rel, s)
 
