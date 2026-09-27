@@ -9,8 +9,11 @@ on:
       - '.github/workflows/test-kernelsu-v3.3.0.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  apply-patch:
+  migrate-and-validate:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout payload repository
@@ -20,54 +23,55 @@ jobs:
         run: |
           git clone --branch v3.3.0 --depth 1 https://github.com/tiann/KernelSU.git KernelSU-v3.3.0
           cd KernelSU-v3.3.0
-          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "932014ab5b2c9b74a3d11e2ec4d17dd10fc9442e"
           git describe --tags --exact-match
 
-      - name: Check Samsung patch against v3.3.0
-        id: apply
+      - name: Apply clean Samsung hunks and migrate conflicts
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           cd KernelSU-v3.3.0
-          PATCH="../kernelsu/patches/KernelSU-v3.2.5-samsung-kdp-rkp-defex.patch"
+          OLD_PATCH="../kernelsu/patches/KernelSU-v3.2.5-samsung-kdp-rkp-defex.patch"
 
-          echo "=== git apply --check ==="
-          git apply --check "$PATCH"
-          CHECK_RC=$?
+          # Apply everything that still matches v3.3.0, leaving rejects for the
+          # five files that changed upstream.
+          git apply --reject "$OLD_PATCH" || true
 
-          if [ "$CHECK_RC" -eq 0 ]; then
-            echo "Patch applies cleanly without migration."
-            git apply "$PATCH"
-            exit 0
-          fi
+          # Rebuild these five files from pristine v3.3.0 so no partially
+          # applied stale hunk survives the migration.
+          git checkout HEAD --             kernel/Kbuild             kernel/core/init.c             kernel/hook/arm64/patch_memory.c             userspace/ksud/src/late_load.rs             userspace/ksud/src/utils.rs
+          find . -name '*.rej' -delete
 
-          echo "=== direct apply failed; trying 3-way ==="
-          git reset --hard HEAD
-          git apply --3way "$PATCH"
-          THREEWAY_RC=$?
+          python3 ../kernelsu/tools/migrate_samsung_patch_v3_3_0.py "$PWD"
 
-          if [ "$THREEWAY_RC" -eq 0 ]; then
-            echo "Patch applies cleanly with 3-way merge."
-            exit 0
-          fi
+          echo "=== migrated diff check ==="
+          git diff --check
+          git status --short
 
-          echo "=== 3-way failed; collecting reject hunks ==="
-          git reset --hard HEAD
-          git apply --reject "$PATCH" || true
-
-          echo "=== reject files ==="
-          find . -name '*.rej' -print
-
-          echo "=== reject contents ==="
-          while IFS= read -r f; do
-            echo "----- $f -----"
-            cat "$f"
-          done < <(find . -name '*.rej' -print)
-
-          exit "$THREEWAY_RC"
-
-      - name: Show migrated tree status
-        if: always()
+      - name: Generate v3.3.0 patch
         run: |
           cd KernelSU-v3.3.0
-          git status --short
+          git diff --binary > ../kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
+          test -s ../kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
+
+      - name: Validate generated patch from pristine v3.3.0
+        run: |
+          cd KernelSU-v3.3.0
+          git reset --hard HEAD
+          git clean -fd
+          PATCH="../kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch"
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          git diff --check
+
+      - name: Commit generated patch to upgrade branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
+          if git diff --cached --quiet; then
+            echo "Generated patch is already current."
+          else
+            git commit -m "kernelsu: migrate Samsung patch to v3.3.0"
+            git push
+          fi
