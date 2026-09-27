@@ -1,0 +1,135 @@
+name: Build KernelSU v3.3.0 Samsung S25 candidate
+
+on:
+  push:
+    branches:
+      - upgrade-kernelsu-v3.3.0
+    paths:
+      - 'kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch'
+      - '.github/workflows/build-kernelsu-v3.3.0-s25.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ko:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android15-6.6-20260828
+      options: --privileged
+
+    steps:
+      - name: Checkout payload repository
+        uses: actions/checkout@v4
+
+      - name: Prepare KernelSU v3.3.0 Samsung tree
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git clone --branch v3.3.0 --depth 1 https://github.com/tiann/KernelSU.git KernelSU
+          cd KernelSU
+          test "$(git rev-parse HEAD)" = "932014ab5b2c9b74a3d11e2ec4d17dd10fc9442e"
+          git apply ../kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
+          git diff --check
+
+      - name: Build Samsung android15-6.6 module
+        run: |
+          set -eux
+          cd KernelSU/kernel
+          make clean || true
+          CONFIG_KSU=m           CONFIG_KSU_SAMSUNG_KDP=y           CONFIG_KSU_SAMSUNG_RKP=y           CONFIG_KSU_SAMSUNG_DEFEX=y           CC=clang make -j"$(nproc)"
+
+          echo "=== modinfo before strip ==="
+          modinfo ./kernelsu.ko || true
+          echo "=== undefined imports ==="
+          llvm-nm -u ./kernelsu.ko | sort || true
+          echo "=== __versions ==="
+          llvm-readelf -SW ./kernelsu.ko | grep __versions || true
+
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp ./kernelsu.ko "$GITHUB_WORKSPACE/out/android15-6.6_kernelsu-s25u-kdp-v3.3.0.ko"
+          llvm-strip -d "$GITHUB_WORKSPACE/out/android15-6.6_kernelsu-s25u-kdp-v3.3.0.ko"
+          sha256sum "$GITHUB_WORKSPACE/out/android15-6.6_kernelsu-s25u-kdp-v3.3.0.ko"
+
+      - name: Upload module
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernelsu-v3.3.0-s25-ko
+          path: out/android15-6.6_kernelsu-s25u-kdp-v3.3.0.ko
+
+  build-ksud:
+    needs: build-ko
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout payload repository
+        uses: actions/checkout@v4
+
+      - name: Download module
+        uses: actions/download-artifact@v4
+        with:
+          name: kernelsu-v3.3.0-s25-ko
+          path: out
+
+      - name: Prepare KernelSU v3.3.0 Samsung tree
+        run: |
+          git clone --branch v3.3.0 --depth 1 https://github.com/tiann/KernelSU.git KernelSU
+          cd KernelSU
+          test "$(git rev-parse HEAD)" = "932014ab5b2c9b74a3d11e2ec4d17dd10fc9442e"
+          git apply ../kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
+          mkdir -p userspace/ksud/bin/aarch64
+          cp ../out/android15-6.6_kernelsu-s25u-kdp-v3.3.0.ko             userspace/ksud/bin/aarch64/android15-6.6_kernelsu.ko
+
+      - name: Setup Rust
+        run: |
+          rustup update stable
+          rustup target add aarch64-linux-android
+
+      - name: Setup Android NDK r29
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r29
+
+      - name: Build ksud with embedded Samsung module
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -eux
+          cd KernelSU
+          source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
+          cargo build --target "$TRIPLE" --release --manifest-path ./userspace/ksud/Cargo.toml
+          cp "target/aarch64-linux-android/release/ksud"             "../out/ksud-s25u-kdp-v3.3.0"
+          sha256sum "../out/ksud-s25u-kdp-v3.3.0"
+          file "../out/ksud-s25u-kdp-v3.3.0"
+
+      - name: Upload ksud
+        uses: actions/upload-artifact@v4
+        with:
+          name: ksud-v3.3.0-s25
+          path: out/ksud-s25u-kdp-v3.3.0
+
+      - name: Publish candidate files to upgrade branch
+        run: |
+          mkdir -p kernelsu/candidates/v3.3.0
+          cp out/android15-6.6_kernelsu-s25u-kdp-v3.3.0.ko kernelsu/candidates/v3.3.0/
+          cp out/ksud-s25u-kdp-v3.3.0 kernelsu/candidates/v3.3.0/
+
+          {
+            echo "KernelSU upstream: v3.3.0"
+            echo "KernelSU commit: 932014ab5b2c9b74a3d11e2ec4d17dd10fc9442e"
+            echo "KMI: android15-6.6"
+            echo "Samsung config: KDP=y RKP=y DEFEX=y"
+            echo
+            sha256sum kernelsu/candidates/v3.3.0/*
+          } > kernelsu/candidates/v3.3.0/SHA256SUMS.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add kernelsu/candidates/v3.3.0
+          if git diff --cached --quiet; then
+            echo "Candidate artifacts unchanged."
+          else
+            git commit -m "kernelsu: add v3.3.0 S25 candidate artifacts"
+            git push
+          fi
