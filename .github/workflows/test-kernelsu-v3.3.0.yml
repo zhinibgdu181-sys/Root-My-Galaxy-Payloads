@@ -33,25 +33,24 @@ jobs:
           cd KernelSU-v3.3.0
           OLD_PATCH="../kernelsu/patches/KernelSU-v3.2.5-samsung-kdp-rkp-defex.patch"
 
-          # Apply everything that still matches v3.3.0, leaving rejects for the
-          # five files that changed upstream.
           git apply --reject "$OLD_PATCH" || true
 
-          # Rebuild these five files from pristine v3.3.0 so no partially
-          # applied stale hunk survives the migration.
           git checkout HEAD --             kernel/Kbuild             kernel/core/init.c             kernel/hook/arm64/patch_memory.c             userspace/ksud/src/late_load.rs             userspace/ksud/src/utils.rs
           find . -name '*.rej' -delete
 
           python3 ../kernelsu/tools/migrate_samsung_patch_v3_3_0.py "$PWD"
 
-          echo "=== migrated diff check ==="
-          git diff --check
+          # Stage everything so newly-created Samsung source/header files are
+          # included in the generated patch as well.
+          git add -A
+          echo "=== migrated staged diff check ==="
+          git diff --cached --check
           git status --short
 
       - name: Generate v3.3.0 patch
         run: |
           cd KernelSU-v3.3.0
-          git diff --binary > ../kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
+          git diff --cached --binary > ../kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
           test -s ../kernelsu/patches/KernelSU-v3.3.0-samsung-kdp-rkp-defex.patch
 
       - name: Validate generated patch from pristine v3.3.0
@@ -63,6 +62,10 @@ jobs:
           git apply --check "$PATCH"
           git apply "$PATCH"
           git diff --check
+          test -f kernel/compat/samsung_kdp.c
+          test -f kernel/compat/samsung_defex.c
+          test -f kernel/compat/samsung_defex.h
+          test -f kernel/include/ksu_samsung_kdp.h
 
       - name: Commit generated patch to upgrade branch
         run: |
@@ -72,6 +75,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Generated patch is already current."
           else
-            git commit -m "kernelsu: migrate Samsung patch to v3.3.0"
+            git commit -m "kernelsu: include Samsung sources in v3.3.0 patch"
             git push
           fi
