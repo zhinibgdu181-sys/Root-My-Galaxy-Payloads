@@ -1,4 +1,4 @@
-# Re-triggered after migrating all retired Kernel-SU Rust dependency URLs.
+# Re-triggered after migrating ksuinit rustix dependency to KernelSU2.
 name: Build KernelSU v3.3.0 Samsung S25 candidate
 
 on:
