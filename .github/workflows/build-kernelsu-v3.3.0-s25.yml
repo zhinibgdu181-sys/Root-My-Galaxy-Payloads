@@ -1,4 +1,4 @@
-# Re-triggered after adb_client source migration for reproducible v3.3.0 ksud builds.
+# Re-triggered after migrating all retired Kernel-SU Rust dependency URLs.
 name: Build KernelSU v3.3.0 Samsung S25 candidate
 
 on:
