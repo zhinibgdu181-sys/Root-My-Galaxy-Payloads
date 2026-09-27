@@ -1,3 +1,4 @@
+# Re-triggered after migrated patch generator began including new Samsung source files.
 name: Build KernelSU v3.3.0 Samsung S25 candidate
 
 on:
