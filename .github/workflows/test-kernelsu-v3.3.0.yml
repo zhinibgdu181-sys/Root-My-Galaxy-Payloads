@@ -1,0 +1,73 @@
+name: KernelSU v3.3.0 Samsung patch migration
+
+on:
+  push:
+    branches:
+      - upgrade-kernelsu-v3.3.0
+    paths:
+      - 'kernelsu/**'
+      - '.github/workflows/test-kernelsu-v3.3.0.yml'
+  workflow_dispatch:
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout payload repository
+        uses: actions/checkout@v4
+
+      - name: Clone KernelSU v3.3.0
+        run: |
+          git clone --branch v3.3.0 --depth 1 https://github.com/tiann/KernelSU.git KernelSU-v3.3.0
+          cd KernelSU-v3.3.0
+          git rev-parse HEAD
+          git describe --tags --exact-match
+
+      - name: Check Samsung patch against v3.3.0
+        id: apply
+        shell: bash
+        run: |
+          set +e
+          cd KernelSU-v3.3.0
+          PATCH="../kernelsu/patches/KernelSU-v3.2.5-samsung-kdp-rkp-defex.patch"
+
+          echo "=== git apply --check ==="
+          git apply --check "$PATCH"
+          CHECK_RC=$?
+
+          if [ "$CHECK_RC" -eq 0 ]; then
+            echo "Patch applies cleanly without migration."
+            git apply "$PATCH"
+            exit 0
+          fi
+
+          echo "=== direct apply failed; trying 3-way ==="
+          git reset --hard HEAD
+          git apply --3way "$PATCH"
+          THREEWAY_RC=$?
+
+          if [ "$THREEWAY_RC" -eq 0 ]; then
+            echo "Patch applies cleanly with 3-way merge."
+            exit 0
+          fi
+
+          echo "=== 3-way failed; collecting reject hunks ==="
+          git reset --hard HEAD
+          git apply --reject "$PATCH" || true
+
+          echo "=== reject files ==="
+          find . -name '*.rej' -print
+
+          echo "=== reject contents ==="
+          while IFS= read -r f; do
+            echo "----- $f -----"
+            cat "$f"
+          done < <(find . -name '*.rej' -print)
+
+          exit "$THREEWAY_RC"
+
+      - name: Show migrated tree status
+        if: always()
+        run: |
+          cd KernelSU-v3.3.0
+          git status --short
