@@ -279,4 +279,15 @@ s = repl(s,
     rel)
 write(rel, s)
 
+# v3.3.0 tag references the retired Kernel-SU/adb_client URL. Keep the exact
+# pinned commit but use the public KernelSU2 mirror now used by later upstream.
+for rel in ("userspace/ksud/Cargo.toml", "Cargo.lock"):
+    s = read(rel)
+    old = "https://github.com/Kernel-SU/adb_client"
+    new = "https://github.com/KernelSU2/adb_client"
+    if old not in s:
+        raise SystemExit(f"{rel}: old adb_client source URL not found")
+    s = s.replace(old, new)
+    write(rel, s)
+
 print("v3.3.0 Samsung migration edits applied")
