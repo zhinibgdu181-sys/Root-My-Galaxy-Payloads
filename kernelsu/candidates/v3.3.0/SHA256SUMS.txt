@@ -1,0 +1,8 @@
+KernelSU upstream: v3.3.0
+KernelSU commit: 932014ab5b2c9b74a3d11e2ec4d17dd10fc9442e
+KMI: android15-6.6
+Samsung config: KDP=y RKP=y DEFEX=y
+
+24b02220e8eb15c9fb08974f7ea20180d5e192ed535d91b9f3ccb4a0eeaf22f1  kernelsu/candidates/v3.3.0/SHA256SUMS.txt
+e802168b14d7cfd9fe6082baa57ebe206a76c742f504ad45124a8215b05821e9  kernelsu/candidates/v3.3.0/android15-6.6_kernelsu-s25u-kdp-v3.3.0.ko
+5871b7dd6232b6bcb32d00d6b70ea834e23d66ec177d631a210d07b5d03a3c2d  kernelsu/candidates/v3.3.0/ksud-s25u-kdp-v3.3.0
