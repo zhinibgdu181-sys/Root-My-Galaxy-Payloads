@@ -282,7 +282,7 @@ write(rel, s)
 # v3.3.0 tag still references the retired Kernel-SU GitHub organization for
 # several Rust dependencies. Preserve every pinned revision; only migrate the
 # organization URL to the public KernelSU2 mirrors used by later upstream.
-for rel in ("userspace/ksud/Cargo.toml", "Cargo.lock"):
+for rel in ("userspace/ksud/Cargo.toml", "userspace/ksuinit/Cargo.toml", "Cargo.lock"):
     s = read(rel)
     old = "https://github.com/Kernel-SU/"
     new = "https://github.com/KernelSU2/"
