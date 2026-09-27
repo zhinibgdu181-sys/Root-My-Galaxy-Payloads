@@ -43,6 +43,10 @@ APP_RELEASE_SIZE := 104128
 ROOT_HELPER := $(OUTDIR)/cve-2026-43499-root
 ROOT_HELPER_SRC := $(OUTDIR)/su_daemon.instrumented.c
 TARGET_CFLAGS :=
+ROOT_HELPER_CFLAGS :=
+ifeq ($(TARGET),pa2q-S9360ZCSCCZG1)
+ROOT_HELPER_CFLAGS := -DROOT_DAEMON_SANITIZE_SAMSUNG_MOUNTS=1
+endif
 APP_RELEASE_OPT := -Oz
 APP_RELEASE_LINK_FLAGS := -Wl,--gc-sections -Wl,--icf=all -s
 
@@ -104,7 +108,7 @@ $(ROOT_HELPER): src/su_daemon.c tools/instrument_su_daemon.py | $(OUTDIR)
 	else \
 	  python3 tools/instrument_su_daemon.py src/su_daemon.c $(ROOT_HELPER_SRC); \
 	fi
-	$(TARGET_CC) -fPIE -pie -O2 -g0 -Wall -Wextra $(ROOT_HELPER_SRC) -ldl -o $@
+	$(TARGET_CC) -fPIE -pie -O2 -g0 -Wall -Wextra $(ROOT_HELPER_CFLAGS) $(ROOT_HELPER_SRC) -ldl -o $@
 
 $(APP_PRELOAD): $(APP_PRELOAD_SRCS) $(TARGET_HEADER) src/offset.h src/common.h src/kernelsnitch/*.h | $(OUTDIR)
 	$(TARGET_CC) -DAPP_PAYLOAD=1 $(APP_TARGET_CFLAGS) -fPIC $(COMMON_CFLAGS) $(APP_PRELOAD_SRCS) \
