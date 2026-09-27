@@ -1,3 +1,16 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index d8c60b8..f507ff2 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5,7 +5,7 @@ version = 4
+ [[package]]
+ name = "adb_client"
+ version = "3.1.1"
+-source = "git+https://github.com/Kernel-SU/adb_client#d97a966435bebaa55017834869dec08150826aa7"
++source = "git+https://github.com/KernelSU2/adb_client#d97a966435bebaa55017834869dec08150826aa7"
+ dependencies = [
+  "byteorder",
+  "log",
 diff --git a/kernel/Kbuild b/kernel/Kbuild
 index 85932d3..b2c9f6e 100644
 --- a/kernel/Kbuild
@@ -1018,6 +1031,19 @@ index 518ef41..13bfa13 100644
  }
  
  void __init ksu_app_profile_init(void)
+diff --git a/userspace/ksud/Cargo.toml b/userspace/ksud/Cargo.toml
+index 51a194d..f982117 100644
+--- a/userspace/ksud/Cargo.toml
++++ b/userspace/ksud/Cargo.toml
+@@ -54,7 +54,7 @@ nom = "8"
+ derive-new = "0.7"
+ getopts = "0.2"
+ ksuinit = { path = "../ksuinit" }
+-adb_client = { git = "https://github.com/Kernel-SU/adb_client" }
++adb_client = { git = "https://github.com/KernelSU2/adb_client" }
+ prop-rs-android = { git = "https://github.com/Kernel-SU/ksu_props", rev = "6f5723105d8d4cacad31d83d343defbf032c7b33" }
+ 
+ [build-dependencies]
 diff --git a/userspace/ksud/src/late_load.rs b/userspace/ksud/src/late_load.rs
 index 8e6f0fe..2157d9f 100644
 --- a/userspace/ksud/src/late_load.rs
