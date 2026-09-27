@@ -84,6 +84,59 @@ struct su_request {
 static int saved_terminal_fd = -1;
 static struct termios saved_terminal;
 
+/*
+ * The UMH bootstrap starts in the kernel/init mount namespace. On Samsung
+ * firmware that exposes vendor-private rw mounts (EFS, persist, OMR, cache)
+ * to the long-lived bootstrap daemon and every shell it forks. Normal app
+ * processes do not see that namespace, so mount-table integrity checkers can
+ * report the daemon/children as anomalous even though those partitions are
+ * stock.
+ *
+ * For the S9360 helper only, move the daemon into its own private namespace
+ * and detach the vendor-private mounts there. This does not change init's
+ * namespace or unmount anything system-wide.
+ */
+static int normalize_bootstrap_mount_namespace(void) {
+#if defined(ROOT_DAEMON_SANITIZE_SAMSUNG_MOUNTS) && \
+    ROOT_DAEMON_SANITIZE_SAMSUNG_MOUNTS
+  static const char *const private_mounts[] = {
+      "/mnt/vendor/persist",
+      "/mnt/vendor/efs",
+      "/efs",
+      "/cache",
+      "/omr",
+  };
+
+  if (unshare(CLONE_NEWNS) != 0) {
+    dprintf(STDERR_FILENO,
+            "[daemon] mount namespace unshare failed errno=%d (%s)\n",
+            errno, strerror(errno));
+    return 0;
+  }
+  if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) != 0) {
+    dprintf(STDERR_FILENO,
+            "[daemon] mount propagation private failed errno=%d (%s)\n",
+            errno, strerror(errno));
+    return 0;
+  }
+
+  for (size_t i = 0; i < sizeof(private_mounts) / sizeof(private_mounts[0]);
+       i++) {
+    if (umount2(private_mounts[i], MNT_DETACH) == 0) {
+      dprintf(STDERR_FILENO, "[daemon] detached private mount %s\n",
+              private_mounts[i]);
+      continue;
+    }
+    if (errno != EINVAL && errno != ENOENT) {
+      dprintf(STDERR_FILENO,
+              "[daemon] detach private mount failed path=%s errno=%d (%s)\n",
+              private_mounts[i], errno, strerror(errno));
+    }
+  }
+#endif
+  return 1;
+}
+
 /* Optional persistent diagnostic sink. Opened only during KernelSU late-load. */
 static int ksu_diag_fd = -1;
 
@@ -1082,6 +1135,11 @@ static void serve_one(int conn) {
 static int daemon_main(void) {
   signal(SIGPIPE, SIG_IGN);
   set_root_env();
+
+  if (!normalize_bootstrap_mount_namespace()) {
+    dprintf(STDERR_FILENO,
+            "[daemon] continuing without mount namespace normalization\n");
+  }
 
   int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
