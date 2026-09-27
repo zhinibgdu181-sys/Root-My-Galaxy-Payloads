@@ -1,0 +1,797 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+index 85932d3..b2c9f6e 100644
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -1,5 +1,8 @@
+ kernelsu-objs := core/init.o
+ 
++kernelsu-objs += compat/samsung_kdp.o
++kernelsu-objs += compat/samsung_defex.o
++
+ kernelsu-objs += feature/kernel_umount.o
+ kernelsu-objs += feature/sulog.o
+ kernelsu-objs += feature/sucompat.o
+@@ -61,13 +64,25 @@ endif
+ ifeq ($(CONFIG_KSU_DEBUG),y)
+ ccflags-y += -DCONFIG_KSU_DEBUG=1
+ endif
++ifeq ($(CONFIG_KSU_SAMSUNG_KDP),y)
++ccflags-y += -DCONFIG_KSU_SAMSUNG_KDP=1
++endif
++ifeq ($(CONFIG_KSU_SAMSUNG_RKP),y)
++ccflags-y += -DCONFIG_KSU_SAMSUNG_RKP=1
++endif
++ifeq ($(CONFIG_KSU_SAMSUNG_DEFEX),y)
++ccflags-y += -DCONFIG_KSU_SAMSUNG_DEFEX=1
++endif
++ifeq ($(CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT),y)
++ccflags-y += -DCONFIG_KSU_SAMSUNG_NO_PATCH_TEXT=1
++endif
+ ifeq ($(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER),y)
+ ccflags-y += -DCONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER=1
+ endif
+ endif
+ 
+ ccflags-y += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
+-ccflags-y += -I$(objtree)/security/selinux -include $(srctree)/include/uapi/asm-generic/errno.h
++ccflags-y += -I$(objtree)/security/selinux -I$(objtree)/security/selinux/include -include $(srctree)/include/uapi/asm-generic/errno.h
+ 
+ ifneq ($(KBUILD_EXTMOD),)
+ # 6.18 exports the external module source as srcroot when M/MO are used.
+@@ -83,7 +98,7 @@ KSU_KERNEL_DIR := $(src)
+ endif
+ endif
+ 
+-ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
++ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include -I$(KSU_KERNEL_DIR)/..
+ 
+ obj-$(CONFIG_KSU) += kernelsu.o
+ 
+@@ -120,7 +135,9 @@ ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
+ else
+ # If there is no .git directory, use default version
+ $(warning "KSU_GIT_VERSION not defined! It is better to make KernelSU a git repository!")
+-ccflags-y += -DKSU_VERSION=16
++KSU_VERSION ?= 32601
++$(info -- KernelSU fallback version: $(KSU_VERSION))
++ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
+ endif
+ 
+ KSU_NEW_DCACHE_FLUSH := $(shell grep -q __flush_dcache_area $(srctree)/arch/arm64/include/asm/cacheflush.h ; echo $$?)
+diff --git a/kernel/core/init.c b/kernel/core/init.c
+index e9cd102..62ed640 100644
+--- a/kernel/core/init.c
++++ b/kernel/core/init.c
+@@ -8,6 +8,7 @@
+ #include <linux/moduleparam.h>
+ 
+ #include "policy/allowlist.h"
++#include "ksu_samsung_kdp.h"
+ #include "policy/app_profile.h"
+ #include "policy/feature.h"
+ #include "klog.h" // IWYU pragma: keep
+@@ -26,6 +27,7 @@
+ #include "feature/adb_root.h"
+ #include "feature/selinux_hide.h"
+ #include "infra/symbol_resolver.h"
++#include "compat/samsung_defex.h"
+ 
+ #if defined(__x86_64__) && !defined(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER)
+ #include <asm/cpufeature.h>
+@@ -85,6 +87,8 @@ module_param_named(norc, ksu_no_custom_rc, bool, 0);
+ 
+ int __init kernelsu_init(void)
+ {
++    int ret;
++
+ #if defined(__x86_64__) && !defined(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER)
+     // If the kernel has the hardening patch, X86_FEATURE_INDIRECT_SAFE must be set
+     if (!boot_cpu_has(X86_FEATURE_INDIRECT_SAFE)) {
+@@ -120,13 +124,29 @@ int __init kernelsu_init(void)
+         pr_alert("shell is allowed at init!");
+     }
+ 
++#ifdef CONFIG_KSU_SAMSUNG_KDP
++    pr_info("Samsung KDP credential reference handling enabled\n");
++#endif
++
++    ksu_init_symbol_resolver();
++    ret = ksu_samsung_kdp_init();
++    if (ret)
++        return ret;
++
+     ksu_cred = prepare_creds();
+     if (!ksu_cred) {
+         pr_err("prepare cred failed!\n");
++        ksu_samsung_kdp_exit();
+         return -ENOSYS;
+     }
+ 
+-    ksu_init_symbol_resolver();
++    ret = ksu_samsung_defex_init();
++    if (ret) {
++        ksu_put_cred(ksu_cred);
++        ksu_samsung_kdp_exit();
++        return ret;
++    }
++
+     ksu_syscall_hook_init();
+ 
+     ksu_feature_init();
+@@ -213,7 +233,9 @@ void __exit kernelsu_exit(void)
+     ksu_sulog_exit();
+     ksu_feature_exit();
+ 
+-    put_cred(ksu_cred);
++    ksu_samsung_defex_exit();
++    ksu_put_cred(ksu_cred);
++    ksu_samsung_kdp_exit();
+ }
+ 
+ #if NEED_OWN_STACKPROTECTOR
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index 1ba7b58..97d02b6 100644
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -267,7 +267,7 @@ void __init ksu_sucompat_init()
+     }
+ }
+ 
+-void __exit ksu_sucompat_exit()
++void ksu_sucompat_exit()
+ {
+     ksu_unregister_feature_handler(KSU_FEATURE_SU_COMPAT);
+ }
+diff --git a/kernel/hook/arm64/patch_memory.c b/kernel/hook/arm64/patch_memory.c
+index 670f3bd..ec1cdb2 100644
+--- a/kernel/hook/arm64/patch_memory.c
++++ b/kernel/hook/arm64/patch_memory.c
+@@ -188,6 +188,11 @@ static int ksu_patch_text_cb(void *arg)
+ 
+ int ksu_patch_text(void *dst, void *src, size_t len, int flags)
+ {
++#ifdef CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT
++    pr_warn("patch_text disabled for this Samsung target: dst=0x%lx len=%zu flags=0x%x\n",
++            (unsigned long)dst, len, flags);
++    return -EOPNOTSUPP;
++#else
+     struct patch_text_info info = {
+         .dst = dst,
+         .src = src,
+@@ -197,6 +202,7 @@ int ksu_patch_text(void *dst, void *src, size_t len, int flags)
+     };
+ 
+     return stop_machine(ksu_patch_text_cb, &info, cpu_online_mask);
++#endif
+ }
+ 
+ /*
+diff --git a/kernel/hook/arm64/syscall_hook.c b/kernel/hook/arm64/syscall_hook.c
+index f8d052c..81e76c3 100644
+--- a/kernel/hook/arm64/syscall_hook.c
++++ b/kernel/hook/arm64/syscall_hook.c
+@@ -48,13 +48,15 @@ static int patch_syscall_table(int nr, syscall_fn_t fn)
+ 
+ // Direct syscall table patching: overwrite syscall_table[nr] with fn,
+ // save original to *old, and record for restoration at module exit.
+-void ksu_syscall_table_hook(int nr, syscall_fn_t fn, syscall_fn_t *old)
++int ksu_syscall_table_hook(int nr, syscall_fn_t fn, syscall_fn_t *old)
+ {
++    int ret;
++
+     if (ksu_syscall_table == NULL)
+-        return;
++        return -ENOENT;
+     if (nr < 0 || nr >= __NR_syscalls) {
+         pr_info("invalid nr: %d\n", nr);
+-        return;
++        return -EINVAL;
+     }
+ 
+     mutex_lock(&hooked_entries_lock);
+@@ -72,19 +74,26 @@ void ksu_syscall_table_hook(int nr, syscall_fn_t fn, syscall_fn_t *old)
+             break;
+         }
+     }
+-    if (!found) {
+-        if (hooked_count < ARRAY_SIZE(hooked_entries)) {
+-            hooked_entries[hooked_count].nr = nr;
+-            hooked_entries[hooked_count].orig = orig;
+-            hooked_count++;
+-        } else {
+-            pr_warn("hooked_entries full, cannot track syscall %d for restoration\n", nr);
+-        }
++    if (!found && hooked_count >= ARRAY_SIZE(hooked_entries)) {
++        pr_warn("hooked_entries full, cannot track syscall %d for restoration\n", nr);
++        mutex_unlock(&hooked_entries_lock);
++        return -ENOSPC;
+     }
+ 
+-    patch_syscall_table(nr, fn);
++    ret = patch_syscall_table(nr, fn);
++    if (ret) {
++        mutex_unlock(&hooked_entries_lock);
++        return ret;
++    }
++
++    if (!found) {
++        hooked_entries[hooked_count].nr = nr;
++        hooked_entries[hooked_count].orig = orig;
++        hooked_count++;
++    }
+ 
+     mutex_unlock(&hooked_entries_lock);
++    return 0;
+ }
+ 
+ // Restore syscall_table[nr] to its original value and remove from tracking list.
+@@ -216,7 +225,11 @@ void __init ksu_syscall_hook_init(void)
+     }
+ 
+     ksu_dispatcher_nr = ni_slot;
+-    ksu_syscall_table_hook(ksu_dispatcher_nr, (syscall_fn_t)ksu_syscall_dispatcher, NULL);
++    if (ksu_syscall_table_hook(ksu_dispatcher_nr, (syscall_fn_t)ksu_syscall_dispatcher, NULL)) {
++        pr_warn("dispatcher unavailable at slot %d; syscall event hooks disabled\n", ni_slot);
++        ksu_dispatcher_nr = -1;
++        return;
++    }
+     pr_info("dispatcher installed at slot %d\n", ksu_dispatcher_nr);
+ }
+ 
+diff --git a/kernel/hook/syscall_hook.h b/kernel/hook/syscall_hook.h
+index 944f43f..f6abeac 100644
+--- a/kernel/hook/syscall_hook.h
++++ b/kernel/hook/syscall_hook.h
+@@ -37,7 +37,7 @@ bool ksu_has_syscall_hook(int nr);
+ // Saves the original handler to *@old (if non-NULL) and records the entry
+ // for restoration at module exit. Use this for boot-time hooks that replace
+ // a real syscall entry (e.g. ksud hooking __NR_execve/__NR_read/__NR_fstat).
+-void ksu_syscall_table_hook(int nr, syscall_fn_t fn, syscall_fn_t *old);
++int ksu_syscall_table_hook(int nr, syscall_fn_t fn, syscall_fn_t *old);
+ 
+ // Restore syscall_table[@nr] to its original value recorded by
+ // ksu_syscall_table_hook(), and remove the entry from the tracking list.
+diff --git a/kernel/hook/syscall_hook_manager.c b/kernel/hook/syscall_hook_manager.c
+index e5b179e..039c83e 100644
+--- a/kernel/hook/syscall_hook_manager.c
++++ b/kernel/hook/syscall_hook_manager.c
+@@ -5,6 +5,7 @@
+ #include <asm/syscall.h>
+ #include <linux/ptrace.h>
+ #include <linux/slab.h>
++#include <linux/task_work.h>
+ #include <trace/events/syscalls.h>
+ 
+ #include <linux/version.h>
+@@ -21,6 +22,304 @@
+ #include "hook/setuid_hook.h"
+ #include "hook/syscall_hook.h"
+ #include "hook/syscall_event_bridge.h"
++#include "policy/allowlist.h"
++
++static bool syscall_hook_manager_initialized;
++
++#if defined(CONFIG_KSU_SAMSUNG_RKP) && defined(CONFIG_KRETPROBES) && defined(__aarch64__)
++struct ksu_setresuid_task_work {
++    struct callback_head callback;
++    uid_t old_uid;
++    uid_t new_uid;
++};
++
++static bool setresuid_kretprobe_registered;
++static bool samsung_sucompat_kprobes_registered;
++
++#define SAMSUNG_SUCOMPAT_BYPASS_NR (-2)
++
++static bool samsung_sucompat_should_redirect(int syscall_nr)
++{
++    struct pt_regs *syscall_regs = task_pt_regs(current);
++
++    if (unlikely(syscall_regs->syscallno == SAMSUNG_SUCOMPAT_BYPASS_NR)) {
++        syscall_regs->syscallno = syscall_nr;
++        return false;
++    }
++
++    return ksu_su_compat_enabled &&
++           ksu_is_allow_uid_for_current(current_uid().val);
++}
++
++static long __nocfi samsung_sucompat_execve(const struct pt_regs *regs)
++{
++    struct pt_regs *syscall_regs = (struct pt_regs *)regs;
++    int syscall_nr = syscall_regs->syscallno;
++    long ret;
++
++    syscall_regs->syscallno = SAMSUNG_SUCOMPAT_BYPASS_NR;
++    ret = ksu_hook_execve(__NR_execve, regs);
++    syscall_regs->syscallno = syscall_nr;
++    return ret;
++}
++
++static long __nocfi samsung_sucompat_newfstatat(const struct pt_regs *regs)
++{
++    struct pt_regs *syscall_regs = (struct pt_regs *)regs;
++    int syscall_nr = syscall_regs->syscallno;
++    long ret;
++
++    syscall_regs->syscallno = SAMSUNG_SUCOMPAT_BYPASS_NR;
++    ret = ksu_hook_newfstatat(__NR_newfstatat, regs);
++    syscall_regs->syscallno = syscall_nr;
++    return ret;
++}
++
++static long __nocfi samsung_sucompat_faccessat(const struct pt_regs *regs)
++{
++    struct pt_regs *syscall_regs = (struct pt_regs *)regs;
++    int syscall_nr = syscall_regs->syscallno;
++    long ret;
++
++    syscall_regs->syscallno = SAMSUNG_SUCOMPAT_BYPASS_NR;
++    ret = ksu_hook_faccessat(__NR_faccessat, regs);
++    syscall_regs->syscallno = syscall_nr;
++    return ret;
++}
++
++static long __nocfi samsung_sucompat_statx(const struct pt_regs *regs)
++{
++    struct pt_regs *syscall_regs = (struct pt_regs *)regs;
++    int syscall_nr = syscall_regs->syscallno;
++    long ret;
++
++    syscall_regs->syscallno = SAMSUNG_SUCOMPAT_BYPASS_NR;
++    ret = ksu_hook_newfstatat(__NR_statx, regs);
++    syscall_regs->syscallno = syscall_nr;
++    return ret;
++}
++
++static long __nocfi samsung_sucompat_faccessat2(const struct pt_regs *regs)
++{
++    struct pt_regs *syscall_regs = (struct pt_regs *)regs;
++    int syscall_nr = syscall_regs->syscallno;
++    long ret;
++
++    syscall_regs->syscallno = SAMSUNG_SUCOMPAT_BYPASS_NR;
++    ret = ksu_hook_faccessat(__NR_faccessat2, regs);
++    syscall_regs->syscallno = syscall_nr;
++    return ret;
++}
++
++static int samsung_sucompat_execve_pre_handler(struct kprobe *probe, struct pt_regs *regs)
++{
++    if (!samsung_sucompat_should_redirect(__NR_execve))
++        return 0;
++
++    instruction_pointer_set(regs, (unsigned long)samsung_sucompat_execve);
++    return 1;
++}
++
++static int samsung_sucompat_newfstatat_pre_handler(struct kprobe *probe, struct pt_regs *regs)
++{
++    if (!samsung_sucompat_should_redirect(__NR_newfstatat))
++        return 0;
++
++    instruction_pointer_set(regs, (unsigned long)samsung_sucompat_newfstatat);
++    return 1;
++}
++
++static int samsung_sucompat_faccessat_pre_handler(struct kprobe *probe, struct pt_regs *regs)
++{
++    if (!samsung_sucompat_should_redirect(__NR_faccessat))
++        return 0;
++
++    instruction_pointer_set(regs, (unsigned long)samsung_sucompat_faccessat);
++    return 1;
++}
++
++static int samsung_sucompat_statx_pre_handler(struct kprobe *probe, struct pt_regs *regs)
++{
++    if (!samsung_sucompat_should_redirect(__NR_statx))
++        return 0;
++
++    instruction_pointer_set(regs, (unsigned long)samsung_sucompat_statx);
++    return 1;
++}
++
++static int samsung_sucompat_faccessat2_pre_handler(struct kprobe *probe, struct pt_regs *regs)
++{
++    if (!samsung_sucompat_should_redirect(__NR_faccessat2))
++        return 0;
++
++    instruction_pointer_set(regs, (unsigned long)samsung_sucompat_faccessat2);
++    return 1;
++}
++
++static struct kprobe samsung_sucompat_execve_kprobe = {
++    .pre_handler = samsung_sucompat_execve_pre_handler,
++};
++
++static struct kprobe samsung_sucompat_newfstatat_kprobe = {
++    .pre_handler = samsung_sucompat_newfstatat_pre_handler,
++};
++
++static struct kprobe samsung_sucompat_faccessat_kprobe = {
++    .pre_handler = samsung_sucompat_faccessat_pre_handler,
++};
++
++static struct kprobe samsung_sucompat_statx_kprobe = {
++    .pre_handler = samsung_sucompat_statx_pre_handler,
++};
++
++static struct kprobe samsung_sucompat_faccessat2_kprobe = {
++    .pre_handler = samsung_sucompat_faccessat2_pre_handler,
++};
++
++static int samsung_sucompat_hook_init(void)
++{
++    int ret;
++
++    if (!ksu_syscall_table)
++        return -ENOENT;
++
++    samsung_sucompat_execve_kprobe.addr =
++        (kprobe_opcode_t *)READ_ONCE(ksu_syscall_table[__NR_execve]);
++    samsung_sucompat_newfstatat_kprobe.addr =
++        (kprobe_opcode_t *)READ_ONCE(ksu_syscall_table[__NR_newfstatat]);
++    samsung_sucompat_faccessat_kprobe.addr =
++        (kprobe_opcode_t *)READ_ONCE(ksu_syscall_table[__NR_faccessat]);
++    samsung_sucompat_statx_kprobe.addr =
++        (kprobe_opcode_t *)READ_ONCE(ksu_syscall_table[__NR_statx]);
++    samsung_sucompat_faccessat2_kprobe.addr =
++        (kprobe_opcode_t *)READ_ONCE(ksu_syscall_table[__NR_faccessat2]);
++
++    ksu_sucompat_init();
++
++    ret = register_kprobe(&samsung_sucompat_execve_kprobe);
++    if (ret)
++        goto exit_sucompat;
++
++    ret = register_kprobe(&samsung_sucompat_newfstatat_kprobe);
++    if (ret)
++        goto unregister_execve;
++
++    ret = register_kprobe(&samsung_sucompat_faccessat_kprobe);
++    if (ret)
++        goto unregister_newfstatat;
++
++    ret = register_kprobe(&samsung_sucompat_statx_kprobe);
++    if (ret)
++        goto unregister_faccessat;
++
++    ret = register_kprobe(&samsung_sucompat_faccessat2_kprobe);
++    if (ret)
++        goto unregister_statx;
++
++    samsung_sucompat_kprobes_registered = true;
++    pr_info("hook_manager: Samsung sucompat kprobes registered\n");
++    return 0;
++
++unregister_statx:
++    unregister_kprobe(&samsung_sucompat_statx_kprobe);
++unregister_faccessat:
++    unregister_kprobe(&samsung_sucompat_faccessat_kprobe);
++unregister_newfstatat:
++    unregister_kprobe(&samsung_sucompat_newfstatat_kprobe);
++unregister_execve:
++    unregister_kprobe(&samsung_sucompat_execve_kprobe);
++exit_sucompat:
++    ksu_sucompat_exit();
++    return ret;
++}
++
++static void samsung_sucompat_hook_exit(void)
++{
++    if (!samsung_sucompat_kprobes_registered)
++        return;
++
++    unregister_kprobe(&samsung_sucompat_faccessat2_kprobe);
++    unregister_kprobe(&samsung_sucompat_statx_kprobe);
++    unregister_kprobe(&samsung_sucompat_faccessat_kprobe);
++    unregister_kprobe(&samsung_sucompat_newfstatat_kprobe);
++    unregister_kprobe(&samsung_sucompat_execve_kprobe);
++    samsung_sucompat_kprobes_registered = false;
++    ksu_sucompat_exit();
++}
++
++static void setresuid_task_work_func(struct callback_head *callback)
++{
++    struct ksu_setresuid_task_work *work = container_of(callback, struct ksu_setresuid_task_work, callback);
++
++    ksu_handle_setresuid(work->old_uid, work->new_uid);
++    kfree(work);
++}
++
++static int setresuid_entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
++{
++    *(uid_t *)ri->data = current_uid().val;
++    return 0;
++}
++
++static int setresuid_return_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
++{
++    struct ksu_setresuid_task_work *work;
++    uid_t old_uid = *(uid_t *)ri->data;
++    uid_t new_uid;
++
++    if (regs_return_value(regs) < 0)
++        return 0;
++
++    new_uid = current_uid().val;
++    if (old_uid == new_uid)
++        return 0;
++
++    work = kzalloc(sizeof(*work), GFP_ATOMIC);
++    if (!work)
++        return 0;
++
++    work->old_uid = old_uid;
++    work->new_uid = new_uid;
++    work->callback.func = setresuid_task_work_func;
++
++    if (task_work_add(current, &work->callback, TWA_RESUME))
++        kfree(work);
++
++    return 0;
++}
++
++static struct kretprobe setresuid_kretprobe = {
++    .kp.symbol_name = "__arm64_sys_setresuid",
++    .entry_handler = setresuid_entry_handler,
++    .handler = setresuid_return_handler,
++    .data_size = sizeof(uid_t),
++};
++
++static int samsung_setresuid_hook_init(void)
++{
++    int ret = register_kretprobe(&setresuid_kretprobe);
++
++    if (ret) {
++        pr_err("hook_manager: Samsung setresuid kretprobe failed: %d\n", ret);
++        return ret;
++    }
++
++    setresuid_kretprobe_registered = true;
++    ksu_setuid_hook_init();
++    pr_info("hook_manager: Samsung setresuid kretprobe registered\n");
++    return 0;
++}
++
++static void samsung_setresuid_hook_exit(void)
++{
++    if (!setresuid_kretprobe_registered)
++        return;
++
++    unregister_kretprobe(&setresuid_kretprobe);
++    setresuid_kretprobe_registered = false;
++    ksu_setuid_hook_exit();
++}
++#endif
+ 
+ #ifdef CONFIG_KRETPROBES
+ 
+@@ -126,6 +425,19 @@ void __init ksu_syscall_hook_manager_init(void)
+     int ret;
+     pr_info("hook_manager: ksu_hook_manager_init called\n");
+ 
++    if (ksu_dispatcher_nr < 0) {
++        pr_warn("hook_manager: dispatcher unavailable; syscall event hooks disabled\n");
++#if defined(CONFIG_KSU_SAMSUNG_RKP) && defined(CONFIG_KRETPROBES) && defined(__aarch64__)
++        samsung_setresuid_hook_init();
++        ret = samsung_sucompat_hook_init();
++        if (ret)
++            pr_err("hook_manager: Samsung sucompat hook init failed: %d\n", ret);
++#endif
++        return;
++    }
++
++    syscall_hook_manager_initialized = true;
++
+ #ifdef CONFIG_KRETPROBES
+     syscall_regfunc_rp = init_kretprobe("syscall_regfunc", syscall_regfunc_handler);
+     syscall_unregfunc_rp = init_kretprobe("syscall_unregfunc", syscall_unregfunc_handler);
+@@ -157,6 +469,15 @@ void __init ksu_syscall_hook_manager_init(void)
+ void __exit ksu_syscall_hook_manager_exit(void)
+ {
+     pr_info("hook_manager: ksu_hook_manager_exit called\n");
++
++    if (!syscall_hook_manager_initialized) {
++#if defined(CONFIG_KSU_SAMSUNG_RKP) && defined(CONFIG_KRETPROBES) && defined(__aarch64__)
++        samsung_sucompat_hook_exit();
++        samsung_setresuid_hook_exit();
++#endif
++        ksu_syscall_hook_exit();
++        return;
++    }
+ #ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
+     unregister_trace_sys_enter(ksu_sys_enter_handler, NULL);
+     tracepoint_synchronize_unregister();
+diff --git a/kernel/hook/tp_marker.c b/kernel/hook/tp_marker.c
+index c78bbbd..5666403 100644
+--- a/kernel/hook/tp_marker.c
++++ b/kernel/hook/tp_marker.c
+@@ -7,6 +7,7 @@
+ #include <linux/sched/task.h>
+ 
+ #include "policy/allowlist.h"
++#include "ksu_samsung_kdp.h"
+ #include "klog.h" // IWYU pragma: keep
+ #include "selinux/selinux.h"
+ 
+@@ -100,7 +101,7 @@ void ksu_mark_running_process_locked(void)
+             ksu_clear_task_tracepoint_flag(t);
+             pr_info("tp_marker: unmark process: pid:%d, uid: %d, comm:%s\n", t->pid, uid, t->comm);
+         }
+-        put_cred(cred);
++        ksu_put_cred(cred);
+     }
+     read_unlock(&tasklist_lock);
+ }
+diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
+index 518ef41..13bfa13 100644
+--- a/kernel/policy/app_profile.c
++++ b/kernel/policy/app_profile.c
+@@ -18,6 +18,8 @@
+ #include "selinux/selinux.h"
+ #include "infra/su_mount_ns.h"
+ #include "hook/tp_marker.h"
++#include "compat/samsung_defex.h"
++#include "ksu_samsung_kdp.h"
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
+ static struct group_info root_groups = { .usage = REFCOUNT_INIT(2) };
+@@ -198,7 +200,12 @@ int escape_with_root_profile(void)
+     setup_groups(profile, cred);
+     setup_selinux(profile->selinux_domain, cred);
+ 
+-    commit_creds(cred);
++    ret = ksu_samsung_kdp_commit_creds(cred);
++    if (ret) {
++        pr_err("Samsung KDP credential install failed: %d\n", ret);
++        goto out_abort_creds;
++    }
++    ksu_samsung_defex_sync_current();
+ 
+     disable_seccomp();
+ 
+@@ -231,6 +238,7 @@ void escape_to_root_for_init(void)
+ 
+     setup_selinux(KERNEL_SU_CONTEXT, cred);
+     commit_creds(cred);
++    ksu_samsung_defex_sync_current();
+ }
+ 
+ void __init ksu_app_profile_init(void)
+diff --git a/userspace/ksud/src/late_load.rs b/userspace/ksud/src/late_load.rs
+index 8e6f0fe..2157d9f 100644
+--- a/userspace/ksud/src/late_load.rs
++++ b/userspace/ksud/src/late_load.rs
+@@ -1,7 +1,6 @@
+ use anyhow::{Context, Result};
+ use log::{info, warn};
+ use rustix::cstr;
+-use std::process::Command;
+ 
+ use crate::module::{handle_updated_modules, prune_modules};
+ use crate::{assets, defs, init_event, metamodule, restorecon, utils};
+@@ -35,11 +34,13 @@ fn dump_process_info(label: &str) {
+     );
+ }
+ 
+-pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Result<()> {
+-    utils::daemonize(false)?;
++pub fn run(_package_name: &String, kmi: Option<String>, allow_shell: bool) -> Result<()> {
+     info!("late-load command triggered!");
+     dump_process_info("late-load start");
+ 
++    // Stage the daemon before module load changes this process security context.
++    utils::stage_daemon_from("/data/local/tmp/.ksud-stage").context("Failed to stage ksud")?;
++
+     // 1. Check if KernelSU is already loaded
+     if ksuinit::has_kernelsu() {
+         info!("KernelSU already loaded, skip loading ko");
+@@ -78,7 +79,7 @@ pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Res
+         warn!("clear temp configs failed: {e}");
+     }
+ 
+-    utils::install(None, None).context("Failed to install ksud")?;
++    utils::finish_install(None, None).context("Failed to finish ksud installation")?;
+ 
+     // 5. Handle module updates
+     if let Err(e) = handle_updated_modules() {
+@@ -129,18 +130,5 @@ pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Res
+     // 13. Execute boot-completed stage scripts (non-blocking)
+     init_event::run_stage("boot-completed", false);
+ 
+-    // 14. Restart Manager so it gets a fresh ksu fd from the newly loaded kernel module
+-    info!("Restarting KernelSU Manager {package_name}...");
+-    let _ = Command::new("am")
+-        .args(["force-stop", package_name])
+-        .status();
+-    let _ = Command::new("am")
+-        .args([
+-            "start",
+-            "-n",
+-            &format!("{package_name}/me.weishu.kernelsu.ui.MainActivity"),
+-        ])
+-        .status();
+-
+     Ok(())
+ }
+diff --git a/userspace/ksud/src/utils.rs b/userspace/ksud/src/utils.rs
+index 0e9ba51..1bbe9e8 100644
+--- a/userspace/ksud/src/utils.rs
++++ b/userspace/ksud/src/utils.rs
+@@ -1,7 +1,8 @@
+ use anyhow::{Context, Error, Ok, Result, bail};
+-use rustix::fs::{Mode, OFlags, open};
++use rustix::fs::{Mode, OFlags, chown, open};
+ use rustix::process::setpgid;
+ use rustix::stdio::{dup2_stderr, dup2_stdin, dup2_stdout};
++use rustix::thread::{Gid, Uid};
+ use std::{
+     ffi::{CStr, CString, c_char, c_void},
+     fs::{File, OpenOptions, create_dir_all, remove_file, write},
+@@ -231,17 +232,37 @@ fn link_ksud_to_bin() -> Result<()> {
+     Ok(())
+ }
+ 
+-pub fn install(libadbroot: Option<PathBuf>, data_path: Option<PathBuf>) -> Result<()> {
++pub fn stage_daemon() -> Result<()> {
+     ensure_dir_exists(defs::ADB_DIR)?;
+     let _ = std::fs::remove_file(defs::DAEMON_PATH);
+     std::fs::copy(
+-        // We should use /proc/self/exe, DO NOT resolve the real path
+-        // So that if someone execute /data/adb/ksud install, ksud won't be removed unexpectedly
++        // Preserve upstream v3.3.0 behavior: use /proc/self/exe instead of
++        // resolving the executable path before replacing /data/adb/ksud.
+         "/proc/self/exe",
+         defs::DAEMON_PATH,
+     )?;
++    #[cfg(unix)]
++    set_permissions(defs::DAEMON_PATH, Permissions::from_mode(0o755))?;
++    Ok(())
++}
++
++pub fn stage_daemon_from(staged_exe: impl AsRef<Path>) -> Result<()> {
++    ensure_dir_exists(defs::ADB_DIR)?;
++    std::fs::rename(staged_exe.as_ref(), defs::DAEMON_PATH).with_context(|| {
++        format!(
++            "Failed to rename {} to {}",
++            staged_exe.as_ref().display(),
++            defs::DAEMON_PATH
++        )
++    })?;
++    chown(defs::DAEMON_PATH, Some(Uid::ROOT), Some(Gid::ROOT))?;
++    #[cfg(unix)]
++    set_permissions(defs::DAEMON_PATH, Permissions::from_mode(0o755))?;
++    Ok(())
++}
++
++pub fn finish_install(libadbroot: Option<PathBuf>, data_path: Option<PathBuf>) -> Result<()> {
+     restorecon::lsetfilecon(defs::DAEMON_PATH, restorecon::KSU_CON)?;
+-    // install binary assets
+     assets::ensure_binaries(false).with_context(|| "Failed to extract assets")?;
+ 
+     link_ksud_to_bin()?;
+@@ -277,6 +298,11 @@ pub fn install(libadbroot: Option<PathBuf>, data_path: Option<PathBuf>) -> Resul
+     Ok(())
+ }
+ 
++pub fn install(libadbroot: Option<PathBuf>, data_path: Option<PathBuf>) -> Result<()> {
++    stage_daemon()?;
++    finish_install(libadbroot, data_path)
++}
++
+ pub fn uninstall(package_name: &str) -> Result<()> {
+     if Path::new(defs::MODULE_DIR).exists() {
+         println!("- Uninstall modules..");
+@@ -321,10 +347,6 @@ pub fn daemonize_with<F: FnOnce() -> Result<()>>(use_init_pgrp: bool, configure:
+     Ok(())
+ }
+ 
+-pub fn daemonize(use_init_pgrp: bool) -> Result<()> {
+-    daemonize_with(use_init_pgrp, || Ok(()))
+-}
+-
+ pub fn create_daemon(use_init_pgrp: bool) -> Result<bool> {
+     create_daemon_with(use_init_pgrp, || Ok(()))
+ }
