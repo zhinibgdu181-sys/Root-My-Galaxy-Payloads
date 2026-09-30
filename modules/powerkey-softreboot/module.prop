@@ -1,0 +1,6 @@
+id=powerkey_ksu_softreboot
+name=Power Key → KernelSU Soft Reboot
+version=v1.1-lowpower
+versionCode=2
+author=OpenAI
+description=Low-power POWER-key-only watcher. Press power 4 times within 3 seconds to trigger KernelSU ksud soft-reboot.
