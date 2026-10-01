@@ -1,10 +1,11 @@
 #!/system/bin/sh
 KSUD=/data/adb/ksud
-[ -x "$KSUD" ] || KSUD=/data/local/tmp/ksud-s25u-kdp
+
 if [ ! -x "$KSUD" ]; then
-  echo "ksud not found"
+  echo "Canonical KernelSU userspace binary not found: $KSUD"
   exit 1
 fi
-echo "Triggering KernelSU soft reboot..."
+
+echo "Triggering KernelSU soft reboot through $KSUD ..."
 sync
 exec "$KSUD" soft-reboot
