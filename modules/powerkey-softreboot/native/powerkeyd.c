@@ -27,6 +27,7 @@
 static const char *g_log = "/data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log";
 static volatile sig_atomic_t g_stop = 0;
 static int g_trigger_delay_ms = 1000;
+static char g_build_id[64] = "unknown";
 
 struct power_dev {
     int fd;
@@ -158,6 +159,9 @@ int main(int argc, char **argv) {
         int v = atoi(argv[3]);
         if (v >= 200 && v <= 5000) g_trigger_delay_ms = v;
     }
+    if (argc >= 5 && argv[4] && argv[4][0]) {
+        snprintf(g_build_id, sizeof(g_build_id), "%s", argv[4]);
+    }
 
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
@@ -198,7 +202,7 @@ int main(int argc, char **argv) {
              getpid(), ndev, press_count, window_ms);
     log_line(start_msg);
     char dmsg[160];
-    snprintf(dmsg, sizeof(dmsg), "TRIGGER_DELAY_MS: %d", g_trigger_delay_ms);
+    snprintf(dmsg, sizeof(dmsg), "TRIGGER_DELAY_MS: %d build_id=%s", g_trigger_delay_ms, g_build_id);
     log_line(dmsg);
 
     for (int i = 0; i < ndev; ++i) {
