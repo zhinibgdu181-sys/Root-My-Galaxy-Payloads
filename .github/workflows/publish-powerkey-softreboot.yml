@@ -1,9 +1,9 @@
-name: Publish PowerKey SoftReboot module
+name: Publish PowerKey SoftReboot v1.2 Native
 
 on:
   push:
     branches:
-      - powerkey-softreboot-v1.1
+      - powerkey-softreboot-v1.2-native
     paths:
       - 'modules/powerkey-softreboot/**'
       - '.github/workflows/publish-powerkey-softreboot.yml'
@@ -13,20 +13,49 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  build-and-publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "ndk;28.0.13004108"
+
+      - name: Build ARM64 native watcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          MOD="$GITHUB_WORKSPACE/modules/powerkey-softreboot"
+          NDK="$ANDROID_SDK_ROOT/ndk/28.0.13004108"
+          CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+
+          mkdir -p "$MOD/bin"
+          "$CC" -O2 -Wall -Wextra -Werror -fPIE -pie \
+            "$MOD/native/powerkeyd.c" -o "$MOD/bin/powerkeyd"
+          "$STRIP" --strip-unneeded "$MOD/bin/powerkeyd"
+          chmod 0755 "$MOD/bin/powerkeyd"
+
+          file "$MOD/bin/powerkeyd"
+          readelf -h "$MOD/bin/powerkeyd" | grep -E 'Class:|Machine:|Type:'
 
       - name: Build module ZIP
         shell: bash
         run: |
           set -euo pipefail
-          cd modules/powerkey-softreboot
-          chmod 0755 service.sh action.sh uninstall.sh
-          zip -9 -r "$GITHUB_WORKSPACE/PowerKeySoftReboot-v1.1-LowPower.zip"             module.prop skip_mount config.conf service.sh action.sh uninstall.sh README.txt
+          MOD="$GITHUB_WORKSPACE/modules/powerkey-softreboot"
+          chmod 0755 "$MOD/service.sh" "$MOD/action.sh" "$MOD/uninstall.sh" "$MOD/bin/powerkeyd"
+
+          cd "$MOD"
+          zip -9 -r "$GITHUB_WORKSPACE/PowerKeySoftReboot-v1.2-Native.zip" \
+            module.prop skip_mount config.conf service.sh action.sh uninstall.sh README.txt bin/powerkeyd
+
           cd "$GITHUB_WORKSPACE"
-          sha256sum PowerKeySoftReboot-v1.1-LowPower.zip | tee SHA256SUMS.txt
+          sha256sum PowerKeySoftReboot-v1.2-Native.zip | tee SHA256SUMS.txt
 
       - name: Publish GitHub Release
         env:
@@ -34,9 +63,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="powerkey-softreboot-v1.1-lowpower"
+          TAG="powerkey-softreboot-v1.2-native"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG"               PowerKeySoftReboot-v1.1-LowPower.zip SHA256SUMS.txt --clobber
+            gh release upload "$TAG" \
+              PowerKeySoftReboot-v1.2-Native.zip SHA256SUMS.txt --clobber
           else
-            gh release create "$TAG"               PowerKeySoftReboot-v1.1-LowPower.zip SHA256SUMS.txt               --target "$GITHUB_SHA"               --title "PowerKey KernelSU SoftReboot v1.1 LowPower"               --notes "KernelSU module: press POWER 4 times within 3 seconds to trigger ksud soft-reboot. Low-power watcher monitors only the KEY_POWER input device."
+            gh release create "$TAG" \
+              PowerKeySoftReboot-v1.2-Native.zip SHA256SUMS.txt \
+              --target "$GITHUB_SHA" \
+              --title "PowerKey KernelSU SoftReboot v1.2 Native" \
+              --notes "Native ARM64 KEY_POWER watcher using EVIOCGBIT + poll() + flock(). No getevent process. Repeated KernelSU late-load/service invocations remain single-instance."
           fi
