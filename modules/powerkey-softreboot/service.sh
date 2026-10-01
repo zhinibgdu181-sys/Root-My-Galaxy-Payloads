@@ -4,6 +4,7 @@ CONFIG="$MODDIR/config.conf"
 LOCK="$MODDIR/powerkeyd.lock"
 PRESS_COUNT=4
 WINDOW_MS=3000
+TRIGGER_DELAY_MS=1000
 
 [ -f "$CONFIG" ] && . "$CONFIG"
 
@@ -13,6 +14,9 @@ esac
 case "$WINDOW_MS" in
   ''|*[!0-9]*) WINDOW_MS=3000 ;;
 esac
+case "$TRIGGER_DELAY_MS" in
+  ''|*[!0-9]*) TRIGGER_DELAY_MS=1000 ;;
+esac
 
 while [ "$(getprop sys.boot_completed 2>/dev/null)" != "1" ]; do
   sleep 2
@@ -21,16 +25,6 @@ done
 BIN="$MODDIR/bin/powerkeyd"
 LOG="$MODDIR/power-soft-reboot.log"
 
-# KernelSU Manager does not use /data/adb/ksud for its soft-reboot UI action.
-# It executes the app-bundled libksud.so through a fresh global-mount root shell.
-APK="$(pm path me.weishu.kernelsu 2>/dev/null | sed -n '1s/^package://p')"
-APPDIR="${APK%/base.apk}"
-MANAGER_KSUD="$APPDIR/lib/arm64/libksud.so"
-
-if [ -z "$APK" ] || [ ! -x "$MANAGER_KSUD" ]; then
-  echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: KernelSU Manager libksud.so not found: $MANAGER_KSUD" >> "$LOG"
-  exit 1
-fi
 
 if [ ! -f "$BIN" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: powerkeyd file missing: $BIN" >> "$LOG"
@@ -70,6 +64,6 @@ if [ -f "$LOCK" ]; then
   fi
 fi
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') INFO: launching $BIN press_count=$PRESS_COUNT window_ms=$WINDOW_MS manager_ksud=$MANAGER_KSUD" >> "$LOG"
-nohup "$BIN" "$PRESS_COUNT" "$WINDOW_MS" "$MANAGER_KSUD" >/dev/null 2>&1 &
+echo "$(date '+%Y-%m-%d %H:%M:%S') INFO: launching $BIN press_count=$PRESS_COUNT window_ms=$WINDOW_MS trigger_delay_ms=$TRIGGER_DELAY_MS" >> "$LOG"
+nohup "$BIN" "$PRESS_COUNT" "$WINDOW_MS" "$TRIGGER_DELAY_MS" >/dev/null 2>&1 &
 exit 0
