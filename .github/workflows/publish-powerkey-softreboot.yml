@@ -1,9 +1,9 @@
-name: Publish PowerKey SoftReboot v1.6 Manager Equivalent
+name: Publish PowerKey SoftReboot v1.7 Release Delay
 
 on:
   push:
     branches:
-      - powerkey-softreboot-v1.6-manager-equivalent
+      - powerkey-softreboot-v1.7-release-delay
     paths:
       - 'modules/powerkey-softreboot/**'
       - '.github/workflows/publish-powerkey-softreboot.yml'
@@ -44,11 +44,11 @@ jobs:
           chmod 0755 "$MOD/service.sh" "$MOD/action.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/bin/powerkeyd"
 
           cd "$MOD"
-          zip -9 -r "$GITHUB_WORKSPACE/PowerKeySoftReboot-v1.6-ManagerEquivalent.zip" \
+          zip -9 -r "$GITHUB_WORKSPACE/PowerKeySoftReboot-v1.7-ReleaseDelay.zip" \
             module.prop skip_mount config.conf customize.sh service.sh action.sh uninstall.sh README.txt bin/powerkeyd
 
           cd "$GITHUB_WORKSPACE"
-          sha256sum PowerKeySoftReboot-v1.6-ManagerEquivalent.zip | tee SHA256SUMS.txt
+          sha256sum PowerKeySoftReboot-v1.7-ReleaseDelay.zip | tee SHA256SUMS.txt
 
       - name: Publish GitHub Release
         env:
@@ -56,14 +56,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="powerkey-softreboot-v1.6-manager-equivalent"
+          TAG="powerkey-softreboot-v1.7-release-delay"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" \
-              PowerKeySoftReboot-v1.6-ManagerEquivalent.zip SHA256SUMS.txt --clobber
+              PowerKeySoftReboot-v1.7-ReleaseDelay.zip SHA256SUMS.txt --clobber
           else
             gh release create "$TAG" \
-              PowerKeySoftReboot-v1.6-ManagerEquivalent.zip SHA256SUMS.txt \
+              PowerKeySoftReboot-v1.7-ReleaseDelay.zip SHA256SUMS.txt \
               --target "$GITHUB_SHA" \
-              --title "PowerKey KernelSU SoftReboot v1.6 Manager Equivalent" \
-              --notes "Native ARM64 multi-device KEY_POWER watcher that mirrors KernelSU Manager soft reboot: Manager-bundled libksud.so, fresh root shell, global mount namespace, then soft-reboot."
+              --title "PowerKey KernelSU SoftReboot v1.7 Release Delay" \
+              --notes "Native ARM64 KEY_POWER watcher. After four presses it waits for final key release, delays one second, then runs the same Manager-equivalent module action."
           fi
