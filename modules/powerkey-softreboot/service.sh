@@ -21,6 +21,17 @@ done
 BIN="$MODDIR/bin/powerkeyd"
 LOG="$MODDIR/power-soft-reboot.log"
 
+# KernelSU Manager does not use /data/adb/ksud for its soft-reboot UI action.
+# It executes the app-bundled libksud.so through a fresh global-mount root shell.
+APK="$(pm path me.weishu.kernelsu 2>/dev/null | sed -n '1s/^package://p')"
+APPDIR="${APK%/base.apk}"
+MANAGER_KSUD="$APPDIR/lib/arm64/libksud.so"
+
+if [ -z "$APK" ] || [ ! -x "$MANAGER_KSUD" ]; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: KernelSU Manager libksud.so not found: $MANAGER_KSUD" >> "$LOG"
+  exit 1
+fi
+
 if [ ! -f "$BIN" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: powerkeyd file missing: $BIN" >> "$LOG"
   exit 1
@@ -59,6 +70,6 @@ if [ -f "$LOCK" ]; then
   fi
 fi
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') INFO: launching $BIN press_count=$PRESS_COUNT window_ms=$WINDOW_MS" >> "$LOG"
-nohup "$BIN" "$PRESS_COUNT" "$WINDOW_MS" >/dev/null 2>&1 &
+echo "$(date '+%Y-%m-%d %H:%M:%S') INFO: launching $BIN press_count=$PRESS_COUNT window_ms=$WINDOW_MS manager_ksud=$MANAGER_KSUD" >> "$LOG"
+nohup "$BIN" "$PRESS_COUNT" "$WINDOW_MS" "$MANAGER_KSUD" >/dev/null 2>&1 &
 exit 0
