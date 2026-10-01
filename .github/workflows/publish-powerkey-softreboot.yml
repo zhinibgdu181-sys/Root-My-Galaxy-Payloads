@@ -18,22 +18,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android NDK
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "ndk;28.0.13004108"
+          SDKMANAGER="/usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "ndk;28.0.13004108"
 
       - name: Build ARM64 native watcher
         shell: bash
         run: |
           set -euo pipefail
           MOD="$GITHUB_WORKSPACE/modules/powerkey-softreboot"
-          NDK="$ANDROID_SDK_ROOT/ndk/28.0.13004108"
+          NDK="/usr/local/lib/android/sdk/ndk/28.0.13004108"
           CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
           STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
 
