@@ -1,10 +1,6 @@
 #!/system/bin/sh
-KSUD=/data/adb/ksud
-[ -x "$KSUD" ] || KSUD=/data/local/tmp/ksud-s25u-kdp
-if [ ! -x "$KSUD" ]; then
-  echo "ksud not found"
-  exit 1
-fi
-echo "Triggering KernelSU soft reboot..."
-sync
-exec "$KSUD" soft-reboot
+MODDIR=${0%/*}
+LOG="$MODDIR/power-soft-reboot.log"
+echo "$(date '+%Y-%m-%d %H:%M:%S') ACTION_BLOCKED: ksud soft-reboot disabled on SM-S9360 temporary-root safety build" >> "$LOG"
+echo "Blocked: ksud soft-reboot is disabled on this safety build because it caused a black-screen userspace failure on SM-S9360 temporary-root."
+exit 1
