@@ -1,26 +1,17 @@
-Power Key → KernelSU Soft Reboot v1.3 Native
+Power Key → KernelSU Soft Reboot v1.5
 
-Changes from v1.2
-- Monitors every /dev/input/event* device that advertises KEY_POWER.
-- Uses one native process and one poll() call; no getevent subprocesses.
-- 120 ms duplicate guard prevents mirrored input nodes from counting one physical press twice.
-- flock() keeps the module single-instance across repeated KernelSU late-load/service runs.
-- Logs every selected input device and the ksud path used for soft reboot.
+Compatibility fix
+- Uses only /data/adb/ksud for soft reboot.
+- Never invokes /data/local/tmp/ksud-s25u-kdp.
+- The staging ksud used by Root-My-Galaxy late-load can differ from the installed canonical KernelSU userspace binary.
 
-Default trigger
-  Press POWER 4 times within 3000 ms.
-
-Configuration
-  PRESS_COUNT=4
-  WINDOW_MS=3000
+Watcher
+- Native ARM64 daemon.
+- Monitors all input nodes that advertise KEY_POWER.
+- poll() blocks while idle.
+- flock() keeps a single daemon across repeated late-load/service runs.
+- 120 ms duplicate suppression for mirrored Samsung input events.
+- Trigger: 4 POWER presses within 3000 ms.
 
 Log
-  /data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log
-
-Manual verification
-  ps -A | grep powerkeyd
-  cat /data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log
-
-Expected idle state
-- one powerkeyd process
-- no getevent process created by this module
+/data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log
