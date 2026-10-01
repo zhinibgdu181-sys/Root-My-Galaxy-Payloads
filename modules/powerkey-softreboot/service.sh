@@ -21,14 +21,23 @@ done
 BIN="$MODDIR/bin/powerkeyd"
 LOG="$MODDIR/power-soft-reboot.log"
 
-[ -x "$BIN" ] || {
-  echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: $BIN missing/not executable" >> "$LOG"
+if [ ! -f "$BIN" ]; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: powerkeyd file missing: $BIN" >> "$LOG"
   exit 1
-}
+fi
 
-# If an instance is already running, keep it only when it is the exact same
-# binary. This makes normal repeated late-load invocations no-ops, while an
-# in-place module upgrade can replace the old daemon cleanly.
+# Some module installers do not preserve the executable bit of nested files.
+# Repair it every time service.sh is invoked.
+chmod 0755 "$BIN" 2>/dev/null
+
+if [ ! -x "$BIN" ]; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: powerkeyd exists but chmod 0755 failed: $BIN" >> "$LOG"
+  ls -lZ "$BIN" >> "$LOG" 2>&1
+  exit 1
+fi
+
+# Repeated KernelSU late-load should be a no-op when the exact same daemon is
+# already running. After an in-place module upgrade, stop the stale daemon.
 if [ -f "$LOCK" ]; then
   PID="$(cat "$LOCK" 2>/dev/null)"
   case "$PID" in
@@ -50,5 +59,6 @@ if [ -f "$LOCK" ]; then
   fi
 fi
 
+echo "$(date '+%Y-%m-%d %H:%M:%S') INFO: launching $BIN press_count=$PRESS_COUNT window_ms=$WINDOW_MS" >> "$LOG"
 nohup "$BIN" "$PRESS_COUNT" "$WINDOW_MS" >/dev/null 2>&1 &
 exit 0
