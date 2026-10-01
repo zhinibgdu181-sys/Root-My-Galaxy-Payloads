@@ -26,6 +26,7 @@
 
 static const char *g_log = "/data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log";
 static volatile sig_atomic_t g_stop = 0;
+static char g_manager_ksud[512] = {0};
 
 struct power_dev {
     int fd;
@@ -106,48 +107,67 @@ static int collect_power_devices(struct power_dev *devs, int max_devs) {
     return count;
 }
 
-static const char *find_ksud(void) {
-    static const char *paths[] = {
-        "/data/local/tmp/ksud-s25u-kdp",
-        "/data/adb/ksud",
-        "/system/bin/ksud",
-        NULL
-    };
-    for (int i = 0; paths[i]; ++i) {
-        if (access(paths[i], X_OK) == 0) return paths[i];
-    }
-    return NULL;
-}
-
 static void trigger_soft_reboot(void) {
-    const char *ksud = find_ksud();
-    if (!ksud) {
-        log_line("ERROR: ksud executable not found");
+    if (!g_manager_ksud[0] || access(g_manager_ksud, X_OK) != 0) {
+        log_line("ERROR: KernelSU Manager libksud.so not found or not executable");
         return;
     }
 
-    char msg[384];
-    snprintf(msg, sizeof(msg), "TRIGGER: %s soft-reboot", ksud);
+    char msg[700];
+    snprintf(msg, sizeof(msg),
+             "TRIGGER: manager-equivalent soft reboot via %s debug su -g",
+             g_manager_ksud);
     log_line(msg);
     sync();
 
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        log_line("ERROR: pipe failed");
+        return;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
         log_line("ERROR: fork failed");
         return;
     }
 
     if (pid == 0) {
+        close(pipefd[1]);
+        dup2(pipefd[0], STDIN_FILENO);
+        if (pipefd[0] != STDIN_FILENO) close(pipefd[0]);
+
         int dn = open("/dev/null", O_RDWR | O_CLOEXEC);
         if (dn >= 0) {
-            dup2(dn, STDIN_FILENO);
             dup2(dn, STDOUT_FILENO);
             dup2(dn, STDERR_FILENO);
             if (dn > STDERR_FILENO) close(dn);
         }
-        execl(ksud, ksud, "soft-reboot", (char *)NULL);
+
+        /*
+         * This mirrors KernelSU Manager:
+         *   createRootShell(globalMnt=true)
+         *     -> libksud.so debug su -g
+         *   then run:
+         *     libksud.so soft-reboot
+         */
+        execl(g_manager_ksud, g_manager_ksud,
+              "debug", "su", "-g", (char *)NULL);
         _exit(127);
     }
+
+    close(pipefd[0]);
+
+    char command[1200];
+    int len = snprintf(command, sizeof(command),
+                       "'%s' soft-reboot\nexit\n", g_manager_ksud);
+    if (len > 0 && len < (int)sizeof(command)) {
+        ssize_t ignored = write(pipefd[1], command, (size_t)len);
+        (void)ignored;
+    }
+    close(pipefd[1]);
 }
 
 int main(int argc, char **argv) {
@@ -161,6 +181,9 @@ int main(int argc, char **argv) {
     if (argc >= 3) {
         int v = atoi(argv[2]);
         if (v >= 500 && v <= 10000) window_ms = v;
+    }
+    if (argc >= 4 && argv[3] && argv[3][0]) {
+        snprintf(g_manager_ksud, sizeof(g_manager_ksud), "%s", argv[3]);
     }
 
     signal(SIGTERM, on_signal);
@@ -201,6 +224,13 @@ int main(int argc, char **argv) {
              "START: native multi-device watcher pid=%d devices=%d press_count=%d window_ms=%d",
              getpid(), ndev, press_count, window_ms);
     log_line(start_msg);
+    if (g_manager_ksud[0]) {
+        char kmsg[700];
+        snprintf(kmsg, sizeof(kmsg), "MANAGER_KSUD: %s", g_manager_ksud);
+        log_line(kmsg);
+    } else {
+        log_line("ERROR: manager libksud path was not supplied");
+    }
 
     for (int i = 0; i < ndev; ++i) {
         char msg[512];
