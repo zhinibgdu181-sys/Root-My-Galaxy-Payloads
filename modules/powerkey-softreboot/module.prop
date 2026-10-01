@@ -1,6 +1,6 @@
 id=powerkey_ksu_softreboot
 name=Power Key → KernelSU Manager Soft Reboot
-version=v1.7.1-release-delay
-versionCode=10
+version=v1.8-manager-action
+versionCode=11
 author=OpenAI
-description=Native KEY_POWER watcher. Replaces stale daemons by build ID, waits for the final key release, delays 1 second, then runs the Manager-equivalent action path.
+description=Native KEY_POWER watcher. After 4 presses it waits for final release, delays 1 second, then invokes KernelSU Manager's exact module-action path in a fresh global-mount root shell.
