@@ -1,26 +1,33 @@
-Power Key → KernelSU Soft Reboot v1.3 Native
+Power Key → KernelSU Manager Soft Reboot v1.6
 
-Changes from v1.2
-- Monitors every /dev/input/event* device that advertises KEY_POWER.
-- Uses one native process and one poll() call; no getevent subprocesses.
-- 120 ms duplicate guard prevents mirrored input nodes from counting one physical press twice.
-- flock() keeps the module single-instance across repeated KernelSU late-load/service runs.
-- Logs every selected input device and the ksud path used for soft reboot.
+Why this version exists
+KernelSU Manager's soft-reboot UI does NOT simply run:
+/data/adb/ksud soft-reboot
 
-Default trigger
-  Press POWER 4 times within 3000 ms.
+The Manager source calls:
+execKsud("soft-reboot", newShell=true, globalMnt=true)
 
-Configuration
-  PRESS_COUNT=4
-  WINDOW_MS=3000
+That means:
+1. use the Manager-bundled libksud.so
+2. create a fresh KernelSU root shell
+3. switch that shell to the global mount namespace
+4. run the same Manager-bundled libksud.so soft-reboot inside it
+
+v1.6 mirrors that sequence.
+
+Watcher
+- Native ARM64
+- monitors every KEY_POWER input node
+- blocking poll() while idle
+- flock() single-instance
+- 120 ms duplicate suppression for mirrored Samsung input events
+- trigger: 4 POWER presses within 3000 ms
+
+Manager package expected
+me.weishu.kernelsu
 
 Log
-  /data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log
+/data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log
 
-Manual verification
-  ps -A | grep powerkeyd
-  cat /data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log
-
-Expected idle state
-- one powerkeyd process
-- no getevent process created by this module
+Expected trigger log
+TRIGGER: manager-equivalent soft reboot via .../lib/arm64/libksud.so debug su -g
