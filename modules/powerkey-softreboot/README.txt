@@ -1,26 +1,23 @@
-Power Key → KernelSU Soft Reboot v1.1 Low Power
+Power Key → KernelSU Soft Reboot v1.2 Native
 
-Default trigger:
-  Press POWER 4 times within 3 seconds.
+Design
+- Native ARM64 daemon; no getevent process.
+- Discovers the input event device that advertises KEY_POWER using EVIOCGBIT.
+- Blocks in poll() until an input event arrives.
+- Watches only KEY_POWER presses.
+- Uses flock() so repeated KernelSU late-load/service execution still leaves only one daemon.
+- Default: 4 POWER presses within 3000 ms.
+- Trigger: ksud soft-reboot.
+- No /proc/sysrq-trigger.
 
-Low-power behavior:
-  - Scans /dev/input/event* after boot.
-  - Finds the event node advertising KEY_POWER.
-  - Listens ONLY to that event node.
-  - Touchscreen/fingerprint/volume events do not enter the watcher.
-  - Does not use /proc/sysrq-trigger.
+Configuration
+  PRESS_COUNT=4
+  WINDOW_MS=3000
 
-Reboot action:
-  /data/adb/ksud soft-reboot
-
-Manual test:
-  Use the module Action button in KernelSU Manager.
-
-Configuration:
-  Edit config.conf:
-    PRESS_COUNT=4
-    WINDOW_SEC=3
-  Then reboot once.
-
-Log:
+Log
   /data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log
+
+Verify one instance
+  ps -A | grep powerkeyd
+
+There should be one powerkeyd and zero module-owned getevent processes.
