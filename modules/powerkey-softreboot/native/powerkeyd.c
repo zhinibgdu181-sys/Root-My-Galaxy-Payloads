@@ -120,34 +120,13 @@ static const char *find_ksud(void) {
 }
 
 static void trigger_soft_reboot(void) {
-    const char *ksud = find_ksud();
-    if (!ksud) {
-        log_line("ERROR: ksud executable not found");
-        return;
-    }
-
-    char msg[384];
-    snprintf(msg, sizeof(msg), "TRIGGER: %s soft-reboot", ksud);
-    log_line(msg);
-    sync();
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        log_line("ERROR: fork failed");
-        return;
-    }
-
-    if (pid == 0) {
-        int dn = open("/dev/null", O_RDWR | O_CLOEXEC);
-        if (dn >= 0) {
-            dup2(dn, STDIN_FILENO);
-            dup2(dn, STDOUT_FILENO);
-            dup2(dn, STDERR_FILENO);
-            if (dn > STDERR_FILENO) close(dn);
-        }
-        execl(ksud, ksud, "soft-reboot", (char *)NULL);
-        _exit(127);
-    }
+    /*
+     * SAFETY HOLD:
+     * ksud soft-reboot stops the Android userspace and has been observed to
+     * leave Samsung SM-S9360 temporary-root / late-load sessions on a black
+     * screen. Do not invoke it automatically from a hardware-key gesture.
+     */
+    log_line("TRIGGER_BLOCKED: ksud soft-reboot disabled on this build for SM-S9360 safety");
 }
 
 int main(int argc, char **argv) {
