@@ -1,6 +1,6 @@
 id=powerkey_ksu_softreboot
 name=Power Key → KernelSU Soft Reboot
-version=v1.3.1-native
-versionCode=5
+version=v1.5-canonical-ksud
+versionCode=7
 author=OpenAI
-description=Native low-power multi-device KEY_POWER watcher using poll() + flock(). Includes installer/runtime permission repair. Press POWER 4 times within 3 seconds to trigger KernelSU soft-reboot.
+description=Native low-power multi-device KEY_POWER watcher. Uses canonical /data/adb/ksud only; never calls the Root-My-Galaxy staging ksud. Press POWER 4 times within 3 seconds to trigger KernelSU soft-reboot.
