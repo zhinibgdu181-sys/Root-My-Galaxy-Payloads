@@ -5,7 +5,7 @@ LOCK="$MODDIR/powerkeyd.lock"
 PRESS_COUNT=4
 WINDOW_MS=3000
 TRIGGER_DELAY_MS=1000
-BUILD_ID="v1.7.1-release-delay"
+BUILD_ID="v1.8-manager-action"
 
 [ -f "$CONFIG" ] && . "$CONFIG"
 
@@ -25,6 +25,15 @@ done
 
 BIN="$MODDIR/bin/powerkeyd"
 LOG="$MODDIR/power-soft-reboot.log"
+
+APK="$(pm path me.weishu.kernelsu 2>/dev/null | sed -n '1s/^package://p')"
+APPDIR="${APK%/base.apk}"
+MANAGER_KSUD="$APPDIR/lib/arm64/libksud.so"
+
+if [ -z "$APK" ] || [ ! -x "$MANAGER_KSUD" ]; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR: KernelSU Manager libksud.so not found: $MANAGER_KSUD" >> "$LOG"
+  exit 1
+fi
 
 
 if [ ! -f "$BIN" ]; then
@@ -67,6 +76,6 @@ if [ -f "$LOCK" ]; then
 fi
 
 rm -f "$LOCK"
-echo "$(date '+%Y-%m-%d %H:%M:%S') INFO: launching $BIN press_count=$PRESS_COUNT window_ms=$WINDOW_MS trigger_delay_ms=$TRIGGER_DELAY_MS build_id=$BUILD_ID" >> "$LOG"
-nohup "$BIN" "$PRESS_COUNT" "$WINDOW_MS" "$TRIGGER_DELAY_MS" "$BUILD_ID" >/dev/null 2>&1 &
+echo "$(date '+%Y-%m-%d %H:%M:%S') INFO: launching $BIN press_count=$PRESS_COUNT window_ms=$WINDOW_MS trigger_delay_ms=$TRIGGER_DELAY_MS build_id=$BUILD_ID manager_ksud=$MANAGER_KSUD" >> "$LOG"
+nohup "$BIN" "$PRESS_COUNT" "$WINDOW_MS" "$TRIGGER_DELAY_MS" "$BUILD_ID" "$MANAGER_KSUD" >/dev/null 2>&1 &
 exit 0
