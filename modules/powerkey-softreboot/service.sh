@@ -5,6 +5,7 @@ LOCK="$MODDIR/powerkeyd.lock"
 PRESS_COUNT=4
 WINDOW_MS=3000
 TRIGGER_DELAY_MS=1000
+TRIGGER_DELAY_MS=1000
 
 [ -f "$CONFIG" ] && . "$CONFIG"
 
@@ -13,6 +14,9 @@ case "$PRESS_COUNT" in
 esac
 case "$WINDOW_MS" in
   ''|*[!0-9]*) WINDOW_MS=3000 ;;
+esac
+case "$TRIGGER_DELAY_MS" in
+  ''|*[!0-9]*) TRIGGER_DELAY_MS=1000 ;;
 esac
 case "$TRIGGER_DELAY_MS" in
   ''|*[!0-9]*) TRIGGER_DELAY_MS=1000 ;;
