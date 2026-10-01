@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
         return 3;
     }
 
-    int fd = open(dev, O_RDONLY | O_CLOEXEC);
+    int fd = open(dev, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         log_line("ERROR: cannot open KEY_POWER input device");
         return 4;
