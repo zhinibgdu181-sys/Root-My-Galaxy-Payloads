@@ -28,6 +28,7 @@ static const char *g_log = "/data/adb/modules/powerkey_ksu_softreboot/power-soft
 static volatile sig_atomic_t g_stop = 0;
 static int g_trigger_delay_ms = 1000;
 static char g_build_id[64] = "unknown";
+static char g_manager_ksud[512] = {0};
 
 struct power_dev {
     int fd;
@@ -109,7 +110,12 @@ static int collect_power_devices(struct power_dev *devs, int max_devs) {
 }
 
 static void trigger_soft_reboot(void) {
-    log_line("TRIGGER_PENDING: final POWER key released; scheduling module action");
+    if (!g_manager_ksud[0] || access(g_manager_ksud, X_OK) != 0) {
+        log_line("ERROR: Manager libksud.so unavailable");
+        return;
+    }
+
+    log_line("TRIGGER_PENDING: final POWER key released; scheduling exact Manager module-action path");
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -120,27 +126,50 @@ static void trigger_soft_reboot(void) {
     if (pid == 0) {
         setsid();
 
-        int dn = open("/dev/null", O_RDWR | O_CLOEXEC);
-        if (dn >= 0) {
-            dup2(dn, STDIN_FILENO);
-            dup2(dn, STDOUT_FILENO);
-            dup2(dn, STDERR_FILENO);
-            if (dn > STDERR_FILENO) close(dn);
-        }
-
         struct timespec delay = {
             .tv_sec = g_trigger_delay_ms / 1000,
             .tv_nsec = (long)(g_trigger_delay_ms % 1000) * 1000000L
         };
         while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {}
 
-        execl("/system/bin/sh", "sh",
-              "/data/adb/modules/powerkey_ksu_softreboot/action.sh",
-              (char *)NULL);
-        _exit(127);
+        int pipefd[2];
+        if (pipe(pipefd) != 0) _exit(126);
+
+        pid_t shell_pid = fork();
+        if (shell_pid < 0) _exit(126);
+
+        if (shell_pid == 0) {
+            close(pipefd[1]);
+            dup2(pipefd[0], STDIN_FILENO);
+            if (pipefd[0] != STDIN_FILENO) close(pipefd[0]);
+
+            int dn = open("/dev/null", O_RDWR | O_CLOEXEC);
+            if (dn >= 0) {
+                dup2(dn, STDOUT_FILENO);
+                dup2(dn, STDERR_FILENO);
+                if (dn > STDERR_FILENO) close(dn);
+            }
+
+            execl(g_manager_ksud, g_manager_ksud,
+                  "debug", "su", "-g", (char *)NULL);
+            _exit(127);
+        }
+
+        close(pipefd[0]);
+
+        char command[1200];
+        int len = snprintf(command, sizeof(command),
+                           "'%s' module action powerkey_ksu_softreboot\nexit\n",
+                           g_manager_ksud);
+        if (len > 0 && len < (int)sizeof(command)) {
+            ssize_t ignored = write(pipefd[1], command, (size_t)len);
+            (void)ignored;
+        }
+        close(pipefd[1]);
+        _exit(0);
     }
 
-    log_line("TRIGGER_SCHEDULED: action.sh will run after release delay");
+    log_line("TRIGGER_SCHEDULED: exact Manager module action will run after release delay");
 }
 
 int main(int argc, char **argv) {
@@ -161,6 +190,9 @@ int main(int argc, char **argv) {
     }
     if (argc >= 5 && argv[4] && argv[4][0]) {
         snprintf(g_build_id, sizeof(g_build_id), "%s", argv[4]);
+    }
+    if (argc >= 6 && argv[5] && argv[5][0]) {
+        snprintf(g_manager_ksud, sizeof(g_manager_ksud), "%s", argv[5]);
     }
 
     signal(SIGTERM, on_signal);
@@ -204,6 +236,11 @@ int main(int argc, char **argv) {
     char dmsg[160];
     snprintf(dmsg, sizeof(dmsg), "TRIGGER_DELAY_MS: %d build_id=%s", g_trigger_delay_ms, g_build_id);
     log_line(dmsg);
+    if (g_manager_ksud[0]) {
+        char kmsg[700];
+        snprintf(kmsg, sizeof(kmsg), "MANAGER_KSUD: %s", g_manager_ksud);
+        log_line(kmsg);
+    }
 
     for (int i = 0; i < ndev; ++i) {
         char msg[512];
