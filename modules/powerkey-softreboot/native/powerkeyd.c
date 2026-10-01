@@ -26,7 +26,7 @@
 
 static const char *g_log = "/data/adb/modules/powerkey_ksu_softreboot/power-soft-reboot.log";
 static volatile sig_atomic_t g_stop = 0;
-static char g_manager_ksud[512] = {0};
+static int g_trigger_delay_ms = 1000;
 
 struct power_dev {
     int fd;
@@ -108,66 +108,38 @@ static int collect_power_devices(struct power_dev *devs, int max_devs) {
 }
 
 static void trigger_soft_reboot(void) {
-    if (!g_manager_ksud[0] || access(g_manager_ksud, X_OK) != 0) {
-        log_line("ERROR: KernelSU Manager libksud.so not found or not executable");
-        return;
-    }
-
-    char msg[700];
-    snprintf(msg, sizeof(msg),
-             "TRIGGER: manager-equivalent soft reboot via %s debug su -g",
-             g_manager_ksud);
-    log_line(msg);
-    sync();
-
-    int pipefd[2];
-    if (pipe(pipefd) != 0) {
-        log_line("ERROR: pipe failed");
-        return;
-    }
+    log_line("TRIGGER_PENDING: final POWER key released; scheduling module action");
 
     pid_t pid = fork();
     if (pid < 0) {
-        close(pipefd[0]);
-        close(pipefd[1]);
         log_line("ERROR: fork failed");
         return;
     }
 
     if (pid == 0) {
-        close(pipefd[1]);
-        dup2(pipefd[0], STDIN_FILENO);
-        if (pipefd[0] != STDIN_FILENO) close(pipefd[0]);
+        setsid();
 
         int dn = open("/dev/null", O_RDWR | O_CLOEXEC);
         if (dn >= 0) {
+            dup2(dn, STDIN_FILENO);
             dup2(dn, STDOUT_FILENO);
             dup2(dn, STDERR_FILENO);
             if (dn > STDERR_FILENO) close(dn);
         }
 
-        /*
-         * This mirrors KernelSU Manager:
-         *   createRootShell(globalMnt=true)
-         *     -> libksud.so debug su -g
-         *   then run:
-         *     libksud.so soft-reboot
-         */
-        execl(g_manager_ksud, g_manager_ksud,
-              "debug", "su", "-g", (char *)NULL);
+        struct timespec delay = {
+            .tv_sec = g_trigger_delay_ms / 1000,
+            .tv_nsec = (long)(g_trigger_delay_ms % 1000) * 1000000L
+        };
+        while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {}
+
+        execl("/system/bin/sh", "sh",
+              "/data/adb/modules/powerkey_ksu_softreboot/action.sh",
+              (char *)NULL);
         _exit(127);
     }
 
-    close(pipefd[0]);
-
-    char command[1200];
-    int len = snprintf(command, sizeof(command),
-                       "'%s' soft-reboot\nexit\n", g_manager_ksud);
-    if (len > 0 && len < (int)sizeof(command)) {
-        ssize_t ignored = write(pipefd[1], command, (size_t)len);
-        (void)ignored;
-    }
-    close(pipefd[1]);
+    log_line("TRIGGER_SCHEDULED: action.sh will run after release delay");
 }
 
 int main(int argc, char **argv) {
@@ -182,8 +154,9 @@ int main(int argc, char **argv) {
         int v = atoi(argv[2]);
         if (v >= 500 && v <= 10000) window_ms = v;
     }
-    if (argc >= 4 && argv[3] && argv[3][0]) {
-        snprintf(g_manager_ksud, sizeof(g_manager_ksud), "%s", argv[3]);
+    if (argc >= 4) {
+        int v = atoi(argv[3]);
+        if (v >= 200 && v <= 5000) g_trigger_delay_ms = v;
     }
 
     signal(SIGTERM, on_signal);
@@ -224,13 +197,9 @@ int main(int argc, char **argv) {
              "START: native multi-device watcher pid=%d devices=%d press_count=%d window_ms=%d",
              getpid(), ndev, press_count, window_ms);
     log_line(start_msg);
-    if (g_manager_ksud[0]) {
-        char kmsg[700];
-        snprintf(kmsg, sizeof(kmsg), "MANAGER_KSUD: %s", g_manager_ksud);
-        log_line(kmsg);
-    } else {
-        log_line("ERROR: manager libksud path was not supplied");
-    }
+    char dmsg[160];
+    snprintf(dmsg, sizeof(dmsg), "TRIGGER_DELAY_MS: %d", g_trigger_delay_ms);
+    log_line(dmsg);
 
     for (int i = 0; i < ndev; ++i) {
         char msg[512];
@@ -248,6 +217,7 @@ int main(int argc, char **argv) {
     int count = 0;
     long long first_ms = 0;
     long long last_accepted_ms = -1000000;
+    bool pending_trigger = false;
 
     while (!g_stop) {
         int pr = poll(pfds, (nfds_t)ndev, -1);
@@ -263,9 +233,20 @@ int main(int argc, char **argv) {
             struct input_event ev;
             ssize_t n;
             while ((n = read(devs[i].fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev)) {
-                if (ev.type != EV_KEY || ev.code != KEY_POWER || ev.value != 1) continue;
+                if (ev.type != EV_KEY || ev.code != KEY_POWER) continue;
 
                 long long now = monotonic_ms();
+
+                if (ev.value == 0) {
+                    if (pending_trigger) {
+                        pending_trigger = false;
+                        log_line("POWER_UP final release observed");
+                        trigger_soft_reboot();
+                    }
+                    continue;
+                }
+
+                if (ev.value != 1) continue;
 
                 // A single physical POWER press can be mirrored by more than one
                 // input node on some Samsung devices. Count it only once.
@@ -295,8 +276,8 @@ int main(int argc, char **argv) {
                 if (count >= press_count && now - first_ms <= window_ms) {
                     count = 0;
                     first_ms = 0;
-                    trigger_soft_reboot();
-                    sleep(1);
+                    pending_trigger = true;
+                    log_line("GESTURE_COMPLETE: waiting for final POWER key release");
                 }
             }
 
