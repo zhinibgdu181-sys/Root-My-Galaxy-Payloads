@@ -1,6 +1,6 @@
 id=powerkey_ksu_softreboot
 name=Power Key → KernelSU Soft Reboot
-version=v1.2-native
-versionCode=3
+version=v1.3-native
+versionCode=4
 author=OpenAI
-description=Native low-power KEY_POWER watcher using poll() + flock(). Press POWER 4 times within 3 seconds to trigger KernelSU soft-reboot.
+description=Native low-power multi-device KEY_POWER watcher using poll() + flock(). Press POWER 4 times within 3 seconds to trigger KernelSU soft-reboot.
