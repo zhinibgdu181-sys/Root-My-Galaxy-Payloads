@@ -1,6 +1,6 @@
 id=powerkey_ksu_softreboot
 name=Power Key → KernelSU Manager Soft Reboot
-version=v1.6-manager-equivalent
-versionCode=8
+version=v1.7-release-delay
+versionCode=9
 author=OpenAI
-description=Native low-power multi-device KEY_POWER watcher. Mirrors KernelSU Manager soft reboot by using the Manager bundled libksud.so inside a fresh global-mount root shell. Press POWER 4 times within 3 seconds.
+description=Native KEY_POWER watcher. After 4 presses, waits for the final key release, delays 1 second, then runs the same Manager-equivalent action.sh path.
