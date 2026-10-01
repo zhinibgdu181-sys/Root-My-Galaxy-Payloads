@@ -107,22 +107,15 @@ static int collect_power_devices(struct power_dev *devs, int max_devs) {
 }
 
 static const char *find_ksud(void) {
-    static const char *paths[] = {
-        "/data/local/tmp/ksud-s25u-kdp",
-        "/data/adb/ksud",
-        "/system/bin/ksud",
-        NULL
-    };
-    for (int i = 0; paths[i]; ++i) {
-        if (access(paths[i], X_OK) == 0) return paths[i];
-    }
+    const char *path = "/data/adb/ksud";
+    if (access(path, X_OK) == 0) return path;
     return NULL;
 }
 
 static void trigger_soft_reboot(void) {
     const char *ksud = find_ksud();
     if (!ksud) {
-        log_line("ERROR: ksud executable not found");
+        log_line("ERROR: canonical /data/adb/ksud not found or not executable");
         return;
     }
 
